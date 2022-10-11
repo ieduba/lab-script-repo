@@ -1,0 +1,1 @@
+/ru-auth/local/home/iduba/../nvelez/scripts/pipeline.sh
