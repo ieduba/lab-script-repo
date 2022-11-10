@@ -5,7 +5,7 @@ echo This is job $SLURM_JOB_ID
 echo Test permission
 
 ## dovetail_qc.sh by Irene Duba October 2021. Runs dovetail recommended QC on micro-c data (zipped fastqs): makes .pairs and .bam files, tabulates length 
-## distributions, runs preseq to estimate library size, and searches for bridge sequence
+## distributions, runs preseq to estimate library size
 
 source activate "microc"
 

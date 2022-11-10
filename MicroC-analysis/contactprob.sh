@@ -25,19 +25,6 @@ for sample in *mapped-filt.pairs; do
 	awk '$6 == "+" && $7 == "+" { print $0 }' $sample > $tandemp
 	awk '$6 == "-" && $7 == "-" { print $0 }' $sample > $tandemm
 
-	# adjust fragment start sites so positions are nucleosome centers
-#	inadj=$in-adj
-#	outadj=$out-adj
-#	tandemadj=$sample-tandem-adj
-#	awk '{$3+=73; $5-=73}1' $in\.txt > $inadj\.txt
-#	awk '{$3-=73; $5+=73}1' $out\.txt > $outadj\.txt
-#	awk '{$3+=73; $5+=73}1' $tandemp\.txt > $tandemadj\.txt
-#	awk '{$3-=73; $5-=73}1' $tandemm\.txt >> $tandemadj\.txt
-	
-#	tandem=`echo $sample | sed 's/filt/filt-tandem/'`
-#	cat $tandemp > $tandem
-#	cat $tandemm >> $tandem
-
 	# subtract positions of cis pairs to get genomic distance
 	for file in $inward $outward $tandemp $tandemm; do
 		dist=`echo $file | sed 's/.pairs/-dist.txt/'`
