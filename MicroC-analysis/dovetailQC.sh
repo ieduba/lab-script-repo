@@ -18,8 +18,8 @@ cd $dir
 mkdir -p temp
 
 ## make input file names
-read1=$sample\_R1_001.fastq.gz
-read2=$sample\_R2_001.fastq.gz
+read1=$sample\_R1.fastq.gz
+read2=$sample\_R2.fastq.gz
 cut -f1,2 $fasta\.fai > genome.temp
 
 ## make output file names

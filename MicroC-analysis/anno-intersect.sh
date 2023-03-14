@@ -6,9 +6,11 @@ source activate microc
 
 sample=$1
 bed=$2
-
+echo $bed
 bam=$sample-mapped.PT.bam
+echo $bam
 pair=$sample-mapped-filt.pairs
+echo $pair
 anno=`basename $bed .bed`
 
 # make new bams with only reads that fall in heterochromatin or euchromatin regions 

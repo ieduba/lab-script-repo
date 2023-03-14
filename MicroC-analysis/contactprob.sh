@@ -12,14 +12,17 @@ mkdir -p contactProb
 cd $1
 pwd
 
-for sample in *mapped-filt.pairs; do
-#for sample in */*mESC_E14_12_segments*mapped-filt.pairs; do
-	echo $sample
+for pair in eu*mapped-filt.pairs het*mapped-filt.pairs; do
+	echo $pair
+	sample=$pair	
+#	sample=`echo $pair | sed 's/mapped/mapped-filt/'`
+#	awk '$2 !~ /chrM|chrY|chrU.+|chr.+_.+/ && $4 !~ /chrM|chrY|chrU.+|chr.+_.+/ {print $0}'     $pair > $sample
+
 	# separate reads by orientation (inward, outward, or tandem)
-	inward=`echo $sample | sed 's/filt/filt-inward/'`
-	outward=`echo $sample | sed 's/filt/filt-outward/'`
-	tandemp=`echo $sample | sed 's/filt/filt-tandemplus/'`
-	tandemm=`echo $sample | sed 's/filt/filt-tandemminus/'`
+	inward=`echo $sample | sed 's/mapped-filt/mapped-filt-inward/'`
+	outward=`echo $sample | sed 's/mapped-filt/mapped-filt-outward/'`
+	tandemp=`echo $sample | sed 's/mapped-filt/mapped-filt-tandemplus/'`
+	tandemm=`echo $sample | sed 's/mapped-filt/mapped-filt-tandemminus/'`
 	awk '$6 == "+" && $7 == "-" { print $0 }' $sample > $inward
 	awk '$6 == "-" && $7 == "+" { print $0 }' $sample > $outward
 	awk '$6 == "+" && $7 == "+" { print $0 }' $sample > $tandemp
@@ -31,8 +34,6 @@ for sample in *mapped-filt.pairs; do
 		awk '$2 == $4 {print $5 - $3}' $file | sort -n > $dist
 	done
 done
-mv *filt-inward* ../contactProb
-mv *filt-outward* ../contactProb
-mv *filt-tandem* ../contactProb
-#rm *filt-tm*
-#rm *filt-tp*
+mv *filt-inward*txt ../contactProb
+mv *filt-outward*txt ../contactProb
+mv *filt-tandem*txt ../contactProb
