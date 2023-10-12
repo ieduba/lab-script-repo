@@ -12,11 +12,11 @@ mkdir -p contactProb
 cd $1
 pwd
 
-for pair in eu*mapped-filt.pairs het*mapped-filt.pairs; do
+for pair in *-mapped.pairs; do
 	echo $pair
 	sample=$pair	
-#	sample=`echo $pair | sed 's/mapped/mapped-filt/'`
-#	awk '$2 !~ /chrM|chrY|chrU.+|chr.+_.+/ && $4 !~ /chrM|chrY|chrU.+|chr.+_.+/ {print $0}'     $pair > $sample
+	sample=`echo $pair | sed 's/mapped/mapped-filt/'`
+	awk '$2 !~ /chrM|chrY|chrU.+|chr.+_.+/ && $4 !~ /chrM|chrY|chrU.+|chr.+_.+/ {print $0}' $pair > $sample
 
 	# separate reads by orientation (inward, outward, or tandem)
 	inward=`echo $sample | sed 's/mapped-filt/mapped-filt-inward/'`

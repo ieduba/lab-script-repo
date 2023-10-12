@@ -1,21 +1,15 @@
 #!/bin/bash
 #SBATCH -N 1
-#SBATCH -n 10
+#SBATCH -n 16
 
 echo This is job $SLURM_JOB_ID
 echo Test permission
 
-#fetch SRA files from online
-for SRR in {8954797..8954830}; do
-	prefetch  SRR$SRR
+source activate data
+
+for SRR in {11142931..11142934}; do
+	#prefetch  SRR$SRR
+	#fasterq-dump SRR$SRR -t /tmp -e 16 -p
+	gzip SRR$SRR/SRR$SRR*.fastq
 done
 
-#convert .sra files to fastqs
-for sra in `ls SRR*/*.sra`; do
-	fasterq-dump $sra
-done
-
-#zip fastqs 
-for fastq in `ls *.fastq`; do
-	gzip $fastq
-done 

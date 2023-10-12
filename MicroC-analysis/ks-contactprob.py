@@ -16,8 +16,8 @@ maxdist = 1500
 ## MAIN CODE ##
 with open(f'{options.s1}-{options.s2}-KSresults.csv', 'w') as csvfile:
 	for orient in orients:
-		file1 = f'{options.s1}-mapped-filt-{orient}-dist.txt'
-		file2 = f'{options.s2}-mapped-filt-{orient}-dist.txt'
+		file1 = f'{options.s1}-mapped-filt-{orient}-filt-dist.txt'
+		file2 = f'{options.s2}-mapped-filt-{orient}-filt-dist.txt'
 
 		dists1 = np.loadtxt(file1, dtype = int)
 		dists2 = np.loadtxt(file2, dtype = int)

@@ -18,8 +18,8 @@ cd $dir
 mkdir -p temp
 
 ## make input file names
-read1=$sample\_R1.fastq.gz
-read2=$sample\_R2.fastq.gz
+read1=$sample\_R1_001.fastq.gz
+read2=$sample\_R2_001.fastq.gz
 cut -f1,2 $fasta\.fai > genome.temp
 
 ## make output file names
@@ -40,7 +40,7 @@ python /rugpfs/fs0/risc_lab/scratch/iduba/linker-histone/Micro-C/get_qc_edit.py 
 preseq lc_extrap -bam -pe -extrap 2.1e9 -step 1e8 -seg_len 1000000000 -output $pseq $bam 
 
 ## housekeeping 
-rm genome.temp
+#rm genome.temp
 # rm -r temp
 mkdir -p $sample
 mv $sample-* $sample

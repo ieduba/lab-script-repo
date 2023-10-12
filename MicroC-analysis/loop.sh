@@ -8,8 +8,8 @@ echo Test permission
 source activate "microc"
 
 hic1=$1 # absolute path to hic file 1
-hic2=$2 # absolute path to hic file 2 # SET AS NA IF NOT DOING DIFFERENTIAL
-genome=$3 # name of genome (eg hg38)
+hic2=$2 # absolute path to hic file 2 # SET AS none IF NOT DOING DIFFERENTIAL
+celltype=$3 # name of cell type (eg K562 or hela)
 diffdir=$4 # absolute path to directory for differential loop results
 #loops=/rugpfs/fs0/risc_lab/scratch/iduba/linker-histone/Micro-C/annotations/$genome-TSS-TTS.bedpe
 
@@ -20,8 +20,19 @@ cores=16
 hicdir1=`dirname $hic1`
 hicdir2=`dirname $hic2`
 
+#if [[$celltype == K562]] || [[$celltype == hela]]; then
+#	genome=hg38
+#fi
+#if [[$celltype == mesc]]; then
+#	genome=mm10
+#fi
+
+genome=mm10
+echo $celltype
+echo $genome
+
 for hic in $hic1 $hic2; do
-	if [[ $hic == NA ]]; then
+	if [[ $hic == none ]]; then
 		break
 	fi
 	
@@ -42,7 +53,7 @@ for hic in $hic1 $hic2; do
 # add $loops right before -r for loop list
 		bash $juicertools hiccups $hic . -r $res --threads $cores --cpu --ignore_sparsity > hiccups.log 2>&1
 		echo Running motif finding
-		bash $juicertools motifs $genome $juicerpath/references/motif-$genome merged_loops.bedpe > motif.log 2>&1
+		bash $juicertools motifs $genome $juicerpath/references/motif-$celltype merged_loops.bedpe > motif.log 2>&1
 		awk '$25 == "NA" || $25 == "na" {print $0}' merged_loops_with_motifs.bedpe > noCTCF-loops.bedpe
 		awk '$25 != "NA" && $25 != "na" {print $0}' merged_loops_with_motifs.bedpe > CTCF-loops.bedpe
 		wc -l *loops.bedpe > Nloop-summary.txt
@@ -61,7 +72,7 @@ for hic in $hic1 $hic2; do
 done
 
 for res in 5000 10000 25000; do
-	if [[ $hic2 == NA ]]; then
+	if [[ $hic2 == none ]]; then
 		break
 	fi
 
