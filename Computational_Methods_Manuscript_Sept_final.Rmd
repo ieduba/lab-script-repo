@@ -1,0 +1,2520 @@
+---
+title: "Summary of computational analysis"
+author: "Boris Bartholdy, \\today"
+output: 
+  pdf_document:
+    toc: yes
+    fig_caption: yes
+header-includes:
+- \usepackage[utf8]{inputenc}
+- \usepackage{caption}
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, include = TRUE, fig.width = 6, fig.height = 6, 
+                      fig.keep="high", fig.align='center')
+```
+
+# Overview
+
+This should recreate most of the computational panels from the revised manuscript.
+
+
+```{r loadbasic}
+rm(list = ls())
+invisible(gc(reset = TRUE))
+invisible(lapply(
+  c(
+    "data.table",
+    "ggplot2",
+    "dplyr",
+    "GenomicAlignments",
+    "GenomicFeatures",
+    "GenomicRanges",
+    "GenomeInfoDb",
+    "RColorBrewer",
+    "BSgenome.Mmusculus.UCSC.mm10",
+    "BSgenome.Hsapiens.UCSC.hg38",
+    "ExpressSurv",
+    "multiHiCcompare", 
+    "BiocParallel",
+    "ggnewscale"
+  ),
+  require,
+  character.only = TRUE
+))
+
+baseDir <- "/media/b/7f143ccd-2d92-4999-958c-3ac32981a476/H1_paper"
+hicResDir1 <- file.path(baseDir, "hicDir/out_off/hic_results")
+hicResDir2 <- file.path(baseDir, "hicDir/out/hic_results")
+chipRoot <- file.path(baseDir, "chipDir")
+atacDir <- file.path(baseDir, "atacDir")
+options("scipen"=100, "digits"=4)
+```
+
+```{r project_functions}
+## standard functions use in the H1 TKO project - collection to be sourced in ultiple scripts
+## standard functions use in the H1 TKO project - collection to be sourced in ultiple scripts
+
+#' Set and sort sequence levels for matiching between GRanges objects
+#'
+#' @param gr GRanges object to be adjusted
+#' @param ref Reference GRanges object to which seqlevels shoutd be matched
+#'   (default: Mmusculus requires BSgenome.Mmusculus.UCSC.mm<x> to be loaded)
+#' @param range seqlevels to keep (default: 1:20)
+#' @param sort.seqlevels logical (default: TRUE); whether to sort the seqlevels of gr to match up with those of ref
+#' @param sort logical (default: TRUE); whether returned GRanges object should be sorted
+#' @param ignore.strand (default: TRUE); whether sorting should ignore strand
+#' @param drop.empty (default: FALSE); whether empty seqlevels should be dropped
+#'
+#' @return
+#' @export
+#'
+#' @examples
+matchSeqlevels <- function(gr,
+                           ref = Mmusculus,
+                           range = c(1:20 ),
+                           sort.seqlevels = TRUE,
+                           sort = TRUE,
+                           ignore.strand = TRUE,
+                           drop.empty = FALSE) {
+  remove.levels <- setdiff(seqlevels(gr), seqlevels(ref)[range])
+  add.levels <- setdiff(seqlevels(ref)[range], seqlevels(gr))
+  keep.levels <- setdiff(c(seqlevels(gr), add.levels), remove.levels)
+  if(sort.seqlevels) keep.levels <- keep.levels[match(seqlevels(ref)[range], keep.levels, nomatch=0)]
+  seqlevels(gr, pruning.mode="coarse") <- keep.levels
+  if(drop.empty) seqlevels(gr) <- seqlevelsInUse(gr)
+  if(sort) {gr <- sort(gr, ignore.strand = ignore.strand)}
+  sls <- seqlengths(ref)[match(seqlevels(gr), seqlevels(ref))]
+  stopifnot(identical(names(sls), seqlevels(gr)))
+  seqlengths(gr) <- sls
+  return(gr)
+}
+
+
+GrowRanges <- function (gr,
+                        both = TRUE,
+                        const = 0,
+                        upstream = const,
+                        downstream = const,
+                        trim = TRUE,
+                        remove.empty.ranges = TRUE)
+{
+  if (class(both) != "logical")
+    stop("both has to be TRUE or FALSE")
+  if (class(trim) != "logical")
+    stop("trim has to be TRUE or FALSE")
+  if (class(remove.empty.ranges) != "logical")
+    stop("remove.empty.ranges has to be TRUE or FALSE")
+  is.wholenumber <-
+    function(x, tol = .Machine$double.eps ^ 0.5)
+      abs(x -
+            round(x)) < tol
+  if (is.wholenumber(const) != TRUE)
+    stop("const has to be an integer")
+  if (is.wholenumber(upstream) != TRUE)
+    stop("upstream has to be an integer")
+  if (is.wholenumber(downstream) != TRUE)
+    stop("downstream has to be an integer")
+  if (class(gr) != "GRanges")
+    stop("GRanges has to be a GRanges object")
+  if (both == FALSE) {
+    upstream <- upstream
+    downstream <- downstream
+  }
+  gr2 <-
+    data.table::data.table(as(
+      GenomicRanges::sort(GenomeInfoDb::sortSeqlevels(gr),
+                          ignore.strand = TRUE),
+      "data.frame"
+    )) %>%
+    .[, `:=`(newstart,
+             ifelse(strand == "-", (start - downstream), (start -
+                                                            upstream)))] %>%
+    .[, `:=`(newend, ifelse(strand == "-", (end + upstream), (end + downstream)))] %>%
+    .[, `:=`(mincol, 1)] %>%
+    .[, `:=`(newstart, do.call(pmax, .SD)), .SDcols = c("newstart", "mincol")] %>%
+    .[, `:=`(w,  newend - newstart + 1)]
+  gr2$newstart <- ifelse(gr2$w < 1, (gr2$start + floor((
+    gr2$end -
+      gr2$start + 1
+  ) / 2)), gr2$newstart)
+  gr2$newend <- ifelse(gr2$w < 1, (gr2$start + floor((
+    gr2$end -
+      gr2$start + 1
+  ) / 2)), gr2$newend)
+  gr2 <- gr2[, `:=`(start = NULL,
+                    end = NULL,
+                    mincol = NULL)] %>%
+    GenomicRanges::makeGRangesFromDataFrame(
+      .,
+      keep.extra.columns = TRUE,
+      start.field = "newstart",
+      end.field = "newend",
+      seqinfo = GenomeInfoDb::seqinfo(gr)
+    )
+  if (remove.empty.ranges == TRUE) {
+    gr2 <- gr2[gr2$w > 0]
+  }
+  if (trim == TRUE)
+    return(GenomicRanges::trim(gr2))
+  else
+    return(gr2)
+}
+
+
+#' Title
+#'
+#' @param x 
+#' @param strand 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+#' mm.sel <- seqlengths2gr(seqlengths(Mmusculus)[1:21])
+#' 
+seqlengths2gr <- function(x, strand="*") {
+  gr <- GRanges(names(x), IRanges(1, x), strand=strand)
+  seqlengths(gr) <- x
+  gr
+}
+
+
+
+
+processBed <-
+  function(x,
+           grl,
+           idcolname = "Category",
+           type = "within",
+           ref = Mmusculus,
+           range = c(1:21), 
+               min.len = 0) { # was 80
+    dt <- data.table::fread(x, select = 1:3)
+    unfiltered.reads <- nrow(dt)
+    setnames(dt, c("chr", "start", "end"))
+    dt[, start:= start+1]
+    setkeyv(dt, c("chr", "start", "end"))
+    dt <- with(dt, GRanges(seqnames = chr, IRanges(start, end)))
+    dt <- dt[width(dt) >= min.len]
+    total.reads <- length(dt)
+    dt <- matchSeqlevels(dt, ref=ref, range=range)
+    dt <-
+      lapply(grl, function(y)
+        data.table(width = width(
+          subsetByOverlaps(dt, y, type = type, ignore.strand = TRUE)
+        )))
+    dt <- rbindlist(dt, idcol = idcolname)
+    dt[[idcolname]] <-
+      factor(dt[[idcolname]], unique(dt[[idcolname]]))
+    gc(full = TRUE)
+    setattr(dt, 'total.reads', total.reads)
+    setattr(dt, 'unfiltered.reads', unfiltered.reads)
+    return(dt)
+  }
+
+
+
+
+binnedSum <-
+  function (bins, numvar, varname, na.rm = FALSE)
+  {
+    if (!is(bins, "GRanges"))
+      stop("'x' must be a GRanges object")
+    if (!is(numvar, "RleList"))
+      stop("'numvar' must be an RleList object")
+    if (!identical(seqlevels(bins), names(numvar)))
+      stop("'seqlevels(bin)' and 'names(numvar)' must be identical")
+    viewMeans2 <- function(v, na.rm = FALSE) {
+      if (!isTRUEorFALSE(na.rm))
+        stop("'na.rm' must be TRUE or FALSE")
+      means <- viewSums(v, na.rm = na.rm)
+      w0 <- width(v)
+      v1 <- trim(v)
+      w1 <- width(v1)
+      if (na.rm) {
+        na_count <- sum(is.na(v1))
+        w0 <- w0 - na_count
+        w1 <- w1 - na_count
+      }
+      means <- means * w1/w0
+      means[w0 != 0L & w1 == 0L] <- 0
+      means
+    }
+    bins_per_chrom <- split(ranges(bins), seqnames(bins))
+    means_list <- lapply(names(numvar), function(seqname) {
+      v <- Views(numvar[[seqname]], bins_per_chrom[[seqname]])
+      viewMeans2(v, na.rm = na.rm)
+    })
+    new_mcol <- unsplit(means_list, as.factor(seqnames(bins)))
+    mcols(bins)[[varname]] <- new_mcol
+    bins
+  }
+
+
+
+getTilesOL <- function(tg, gr){
+  gr.in.ti <- findOverlaps(tg, gr)
+  agg <- aggregate(gr, gr.in.ti, score=sum(score))
+  tg$score[countQueryHits(gr.in.ti) > 0L] <- agg$score
+  tg
+}
+
+CutBySize <- function(m, block.size, nb = ceiling(m / block.size)) {
+  int <- m / nb
+  upper <- round(1:nb * int)
+  lower <- c(1, upper[-nb] + 1)
+  size <- c(upper[1], diff(upper))
+  cbind(lower, upper, size)
+}
+
+
+fractionalOverlap <- function(gr, grl, frac.out=TRUE, splitBy="name"){
+  hits <- findOverlaps(gr, grl, ignore.strand=T) 
+  overlaps <- pintersect(gr[queryHits(hits)], grl[subjectHits(hits)], ignore.strand=TRUE)
+  elementMetadata(overlaps) <- elementMetadata(grl[subjectHits(hits)])
+  ols <- split(overlaps, elementMetadata(overlaps)[[splitBy]])
+  if(frac.out) return(sapply(ols, function(x) {sum(as.numeric(width(x)))/sum(as.numeric(width(gr)))})) else return(ols)
+}
+
+
+
+
+getViewMeans <- function(x=NULL, bw, gr=chromHMM, seqlvls=1:20, cn="name") {
+  bw <- matchSeqlevels(bw, range=seqlvls)
+  gr <- matchSeqlevels(gr, range=seqlvls)
+  if(!is.null(x)) 
+    unname(unlist(viewMeans(Views(coverage(bw, weight = "score"), gr[elementMetadata(gr)[[cn]] == x])))) else
+      unname(unlist(viewMeans(Views(coverage(bw, weight = "score"), gr))))
+}
+
+splitGR <- function(x, width, withMcols=FALSE) {
+  starts <- base::Map(seq, start(x), end(x), by=width)
+  ends <- base::Map(function(starts, len) c(tail(starts, -1) - 1L, len),
+                    starts, end(x))
+  seq <- rep(seqnames(x), lengths(starts))
+  strand <- rep(strand(x), lengths(starts))
+  result <- GRanges(seq, IRanges(unlist(starts), unlist(ends)), strand)
+  seqinfo(result) <- seqinfo(x)
+  if (withMcols) {
+    idx <- rep(seq_len(length(x)), lengths(starts))
+    mcols(result) = mcols(x)[idx,,drop=FALSE]
+  }
+  result
+}
+
+ImportBedFromFile <- function (f, chr = 1, start = 2, end = 3, name = 4, score = 5, 
+                                      strand = 6, header = TRUE, keepCols = 0, skip = 0, sep = "\t", 
+                                      starts.in.df.are.0based = TRUE, ...) 
+{
+  fi <- data.table::fread(f, skip = skip, header = header, 
+                          sep = sep, ...)
+  if (((ncol(fi) < 2) & start == end) | ((ncol(fi) < 3) & start != 
+                                         end)) {
+    stop("Cannot proceed; not enough data.")
+  }
+  else {
+    Chr = chr
+    rm(chr)
+    Start = start
+    rm(start)
+    End = end
+    rm(end)
+    Name = name
+    rm(name)
+    Strand = strand
+    rm(strand)
+    maxScore <- function(x, Max = 1000) {
+      i = nchar(ceiling(Max/max(x))) - 1
+      x * 10^i
+    }
+    fi2 <- data.table::data.table(fi[, Chr, with = FALSE])
+    data.table::setnames(fi2, 1, "Chr")
+    fi2$Start <- data.table::data.table(fi[, Start, with = FALSE])[, 
+                                                                   1]
+    data.table::setnames(fi2, 2, "Start")
+    if (starts.in.df.are.0based) 
+      fi2[, `:=`(Start, Start + 1)]
+    fi2$end <- data.table::data.table(fi[, End, with = FALSE])[, 
+                                                               1]
+    data.table::setnames(fi2, 3, "End")
+    if (is.numeric(Name) & Name > 0) 
+      fi2$Name <- data.table::data.table(fi[, Name, with = FALSE])[, 
+                                                                   1]
+    else fi2$Name <- paste0(fi2$Chr, ".", fi2$Start, ".", 
+                            fi2$End)
+    data.table::setnames(fi2, 4, "Name")
+    if (is.numeric(score) & score > 0) 
+      fi2$score <- maxScore(data.table::data.table(fi[, 
+                                                      score, with = FALSE])[, 1], 1000)
+    else fi2$score <- 1000
+    data.table::setnames(fi2, 5, "Score")
+    if (is.numeric(Strand) & Name > 0) {
+      fi2$Strand <- data.table::data.table(fi[, Strand, 
+                                              with = FALSE])[, 1]
+    }
+    else {
+      if (Strand %in% c("-", "+", "*", ".")) {
+        fi2$Strand <- Strand
+      }
+      else {
+        fi2$Strand <- "*"
+      }
+    }
+    data.table::setnames(fi2, 6, "Strand")
+    for (co in keepCols) {
+      if (is.numeric(co) & co > 0) {
+        fi2$co <- fi[, c(co), with = FALSE]
+        data.table::setnames(fi2, ncol(fi2), colnames(fi)[co])
+      }
+      else {
+        if (is.character(co) & !identical(which(colnames(fi) == 
+                                                co), integer(0))) {
+          fi2$co <- fi[, eval(parse(text = co))]
+          data.table::setnames(fi2, ncol(fi2), co)
+        }
+      }
+    }
+    data.table::setkeyv(fi2, c("Chr", "Start", "End"))
+    if (ncol(fi2) > 6) {
+      gr <- eval(parse(text = paste0("with(fi2, GenomicRanges::GRanges(Chr, IRanges::IRanges(Start, End), Strand, Score, name=Name, ", 
+                                     paste(colnames(fi2)[c(7:ncol(fi2))], collapse = ","), 
+                                     "))")))
+    }
+    else {
+      gr <- eval(parse(text = paste0("with(fi2, GenomicRanges::GRanges(Chr, IRanges::IRanges(Start, End), Strand, Score, name=Name", 
+                                     "))")))
+    }
+  }
+  return(gr)
+}
+
+
+
+
+
+
+
+
+pctOvl <- function(R1, R2, cn, R1.name="name") {
+  require(dplyr)
+  co <- GenomicRanges::intersect(R1, reduce(R2), ignore.strand=TRUE)
+  co$IED <- if(length(co)>0) seq(1:length(co))
+  aom <- findOverlaps(R1, co, ignore.strand=TRUE)
+  if(length(aom)==0) {
+    R1$cn <- 0
+    colnames(elementMetadata(R1))[colnames(elementMetadata(R1))=="cn"] <- cn
+    return(R1)
+  } else {
+    if (is.null(eval(parse(text=paste0("R1$", R1.name))))){
+      elementMetadata(R1)[R1.name] <- seq(1:length(R1)) } else {
+        if(length(unique(eval(parse(text=paste0("R1$", R1.name))))) < length(R1)) {
+          nam2=paste0(R1.name, ".old")
+          elementMetadata(R1)[nam2] <- eval(parse(text=paste0("R1$", R1.name)))
+          elementMetadata(R1)[R1.name] <- seq(1:length(R1))
+        }
+      }
+    
+    R1$cn <- 0
+    R1.df <- data.frame(QH=elementMetadata(R1)[R1.name][queryHits(aom),],
+                        SH=co[subjectHits(aom)]$IED,
+                        qh=queryHits(aom), sh=subjectHits(aom))
+    R1.df$N <- 1:nrow(R1.df)
+    tmpgr1 <- R1[queryHits(aom)]
+    tmpgr2 <- co[subjectHits(aom)]
+    R1.df$W <- width(pintersect(tmpgr1, tmpgr2, ignore.strand=TRUE))
+    R1.df <- R1.df %>% dplyr::group_by(QH) %>% dplyr::summarise(w=sum(W)) %>% ungroup()
+    R1[match(R1.df$QH, unname(unlist(elementMetadata(R1)[R1.name])), nomatch=0)]$cn <- R1.df$w
+    stopifnot(elementMetadata(R1[match(R1.df$QH, unname(unlist(elementMetadata(R1)[R1.name])), nomatch=0)])[[R1.name]] == R1.df$QH)
+    colnames(elementMetadata(R1))[colnames(elementMetadata(R1))=="cn"] <- cn
+    R1 }
+} 
+
+
+
+
+###
+plotStates <- function(x, state='Group', xlim=c(0, 1010),
+                       ylim=c(1, 5e4), text.size=15, strip.text.size=10,
+                       facet_col=5, mypal = c("#585858", "#E31A1C"),
+                       hline=NULL){
+  if (!(is.numeric(hline) && data.table::between(hline, ylim[1], ylim[2]))) hline <- NULL
+  plo1 <- ggplot(x,
+                 aes(
+                   x = width,
+                   y= readsPerMb,
+                   by = genotype,
+                   colour = genotype,
+                   State = state
+                 )) +
+    geom_line()+
+    scale_x_continuous(limits = xlim, expand = c(0, 0)) +
+    scale_y_continuous(trans = 'log10', limits =ylim) +
+    theme_classic() +
+    theme(
+      axis.text = element_text(size = 15, colour = "black"),
+      axis.ticks.length = unit(1, "mm"),
+      axis.title.y = element_text(
+        lineheight = 5,
+        angle = 90,
+        vjust = 0,
+        size = text.size,
+        margin = margin(0, 10, 0, 0)),
+      axis.text.x = element_text(
+        size = text.size,
+        margin = margin(5, 5, 10, 5, "pt"),
+        angle = 90,
+        vjust=0.5
+      ),
+      axis.text.y = element_text(size = text.size, margin = margin(5, 5, 10, 5, "pt")),
+      legend.text = element_text(size = text.size),
+      legend.title = element_text(size = text.size),
+      strip.text = element_text(size = strip.text.size),
+      panel.spacing = unit(1, "lines"),
+      legend.position = "bottom") +
+    xlab("Fragment Length") +
+    ylab(expression("Reads per " * 10^6 * " base pairs")) +
+    scale_colour_manual(values = mypal) +
+    # geom_freqpoly(binwidth = 1, pad = FALSE) +
+    #     geom_smooth(method='loess', span=.1, se=F) +
+    facet_wrap( ~ get(state), ncol = facet_col)
+  if(!is.null(hline)) plo1 <- plo1 +
+  geom_hline(data= x, aes(yintercept = hline), linetype="dotted")
+  
+  # plo1a <- plo1 + theme(
+  #   strip.background = element_blank(),
+  #   strip.text.x = element_blank(),
+  # )
+  
+  plo1
+}
+
+
+
+hunt_nrls <- function(l,
+                      offset = 75,
+                      freq_cutoff = 40,
+                      count_thr = 10) {
+  # Hunt_nrls computes a histogram of read lengths and low-pass filters a piece
+  # of that histogram (excluding offset) with a 6th-order Butterworth filter at
+  # the frequency defined by freq_cutoff. Extrema (minima and maxima) are then
+  # extracted, excluding those whose count number falls below a pre-defined
+  # threshold (given by count_thr).
+  require(signal)
+  roll <- function(x , n) {
+    if (n == 0)
+      return(x)
+    c(tail(x, n) , head(x, -n))
+  }
+  cts <- setNames(tabulate(l), 1:max(l)) # counts table
+  ofs <- as.numeric(names(cts)) >= offset # index offset
+  # Generate and implement Butterworth filter
+  bf <- butter(n = 6, W = freq_cutoff / 1000)
+  counts_f <- filtfilt(bf$b, a = bf$a, x = cts[ofs])
+  # Find minima and maxima of filtered data via second derivative test
+  dcounts <- diff(counts_f) # Numerical first derivative
+  ddcounts <- diff(dcounts) # Numerical second derivative
+  crt_pt <-
+    which((dcounts * roll(dcounts, -1)) < 0) # Identify critical points
+  
+  crt_pt <- crt_pt[crt_pt>2]
+  
+  sdt <-
+    ddcounts[crt_pt - 2] # Second derivative test ## not sure where -2 comes from...
+  crt_pt <-
+    crt_pt + offset  # Book-keeping: index critical points to include offset
+  # Extract extrema, area under the curve
+  maxes <- crt_pt[sdt < 0] # Local maxima by second derivative test
+  mins <- crt_pt[sdt > 0] # Local minima by second derivative test
+  auc <- sum(cts[mins[1]:length(cts)]) # Area under the curve
+  # Use only mins/maxes that have an adequate number of counts
+  maxes = maxes[cts[maxes] > count_thr]
+  mins = mins[cts[mins] > count_thr]
+  return(
+    list(
+      bin_edges = as.numeric(names(cts)),
+      counts = cts,
+      bin_edges_f = as.numeric(names(cts[ofs])),
+      counts_f = counts_f,
+      maxes = maxes,
+      mins = mins,
+      auc = auc
+    )
+  )
+}
+
+huntplot <- function(regionfile,
+                     sample.fraction=1, seed=NULL,
+                     file=TRUE, do.plot=TRUE, offset=75, freq_cutoff=40, count_thr=10, palette=pickPal(1), title="", ...){
+  lengths <- {if(file) fread(regionfile) else regionfile}
+  cns <- colnames(lengths)
+  fo <- unique(lengths[[cns[1]]])
+  lengths <- split(lengths$width, lengths[[cns[1]]])
+  lengths <- lengths[match(names(lengths), fo)]
+  sample.list <- as.numeric(lengths(lengths)) * sample.fraction
+  if (!is.null(seed)) set.seed(seed)
+  lengths <- setNames(lapply(seq_along(lengths), function(x) sample(lengths[[x]], size=sample.list[[x]], replace = FALSE)), names(lengths))
+  hnrls <- lapply(lengths, function(x){
+    hunt_nrls(l=x, ...)
+  })
+  if(do.plot) {
+    plot(hnrls[[1]]$counts, type='n', xlab = "size", ylab="counts", main=title)
+    for(i in seq_along(hnrls)){
+      lines(x=1:length(hnrls[[i]]$counts), y= c(rep(0, (offset -1)), hnrls[[i]]$counts_f), col=palette[i], lwd=2)
+      abline(v=hnrls[[i]]$maxes, col=palette[i])
+      abline(v=hnrls[[i]]$mins, col=palette[i], lty=2)
+      cat(paste0(
+        names(hnrls)[i],
+        ': maxes: ', paste((hnrls[[i]]$maxes)[-1], collapse=', '),
+        '; mins: ', paste((hnrls[[i]]$mins), collapse=', '), '; auc: ', hnrls[[i]]$auc, '\n'
+      ))
+    }
+    legend('topright', legend=names(hnrls), fill = unlist(lapply(seq_along(hnrls), function(x) palette[x])))
+    cat('\n')
+  }  else return(hnrls)
+}
+
+
+
+get.state.summary <- function(mygroup = 'Group', total.reads=total.reads, grl = rpml, dt = allStates){
+  allStates.summary <- dt[, .N, by=c(mygroup, 'genotype')]
+  setkeyv(allStates.summary, c(mygroup,"genotype"))
+  allStates.summary <- allStates.summary[CJ(levels(allStates.summary[,get(mygroup)]),unique(allStates.summary[,genotype])),]
+  allStates.summary[[mygroup]] <- factor(allStates.summary[[mygroup]], levels(factor(allStates.summary[[mygroup]]))[match(levels(dt[[mygroup]]), levels(factor(allStates.summary[[mygroup]])))])
+  regionsizes <- sapply(grl, function(x) as.numeric(sum(width(x))))
+  allStates.summary$N.bp <- regionsizes[match(as.character(allStates.summary[[mygroup]]), names(regionsizes)) ]
+  setkeyv(allStates.summary, c("genotype", mygroup))
+  allStates.summary[, readsPerKb := round(N / N.bp * 1E3, 2)]
+  allStates.summary2 <- dt[, .N, by=c(mygroup, "genotype", "width")]
+  allStates.summary2$N.bp <- allStates.summary[ match(allStates.summary2[[mygroup]],  allStates.summary[[mygroup]]), ]$N.bp
+  norm.factors <- min(total.reads)/total.reads
+  allStates.summary2$N <- round(allStates.summary2$N * norm.factors[allStates.summary2$genotype])
+  allStates.summary2$readsPerMb <- round(allStates.summary2$N / allStates.summary2$N.bp *1e6, 2)
+  return(allStates.summary2)
+}
+
+
+### END OF PROJECT FUNCTIONS
+```
+
+
+
+
+```{r load_chromHMM}
+mm.sel <- seqlengths2gr(seqlengths(Mmusculus)[1:21])
+require(GenomicAlignments)
+seqlvls <- 1:20
+chromHMM <- sort(rtracklayer::import(file.path(baseDir, "chromHMM/Model1_restr/CD8T_15_segments.bed")))
+cHMMlr <- rtracklayer::import(file.path(baseDir, "chromHMM/Model1_restr/chromHMM_types_reduced.bed"), "BED")
+cHMMlr$score <- 1000
+
+cHMM.order <- c(15, 14, 13, 4, 7, 10, 12, 9, 8, 11, 3, 1, 6, 5, 2)
+cHMM_lvls <- paste0("E", cHMM.order)
+chromHMM$name <- factor(chromHMM$name, cHMM_lvls)
+chromHMM$score <- 1000
+chromHMM$ID <- make.names(chromHMM$name, unique = TRUE)
+chromHMM$type <- "Type 1"
+chromHMM[chromHMM$name %in% c("E10", "E12", "E9", "E8", "E11", "E7")]$type <- "Type 2"
+chromHMM[chromHMM$name %in% c("E3", "E1", "E6", "E5", "E2")]$type <- "Type 3"
+chromHMM$type <- factor(chromHMM$type)
+
+cHMMlrl <- split(cHMMlr, cHMMlr$name)
+cHMM <- matchSeqlevels(chromHMM, ref=Mmusculus, range = seqlvls)
+cHMMl <- split(cHMM, cHMM$type)
+chromHMMl <- split(cHMM, cHMM$name)
+## nomenclature: 
+### chromHMM: as loaded (with reordered factor levels, with ID and type columns)
+### cHMM: chromHMM filtered on seqlevels
+### chromHMMl: list of chromHMM by name
+### cHMMl: list of cHMM by type
+```
+
+
+```{r diffHiC, eval = FALSE}
+## diffHiC with 100k windows
+invisible(gc(reset = TRUE))
+lapply(c("GenomicFeatures", "RColorBrewer","ggplot2", "BSgenome.Mmusculus.UCSC.mm10", "data.table", "dplyr", "HiTC", "multiHiCcompare", "BiocParallel"), 
+       require, character.only=TRUE)
+
+importC.fun <- function(x, n=1e5) {
+  importC(paste0(hicResDir1, "matrix/", x, "/iced/", n, "/", x, "_", n, "_iced.matrix"),
+          paste0(hicResDir1, "matrix/", x, "/raw/", n, "/", x, "_", n,"_abs.bed"))
+}
+
+numCores <- 8
+register(MulticoreParam(workers = numCores), default = TRUE)
+mm10_blacklist <- rtracklayer::import(file.path(baseDir, "refDir/mm10.blacklist.bed"), "BED")
+# read in files
+WT_M_S1.bed <- fread(file.path(hicResDir1, "matrix/WT_M_S1/raw/100000/WT_M_S1_100000_abs.bed"), stringsAsFactors = TRUE)
+WT_M_S1.mat <- fread(file.path(hicResDir1, "matrix/WT_M_S1/raw/100000/WT_M_S1_100000.matrix"), stringsAsFactors = TRUE)
+setDF(WT_M_S1.bed)
+setDF(WT_M_S1.mat)
+WT_M_S1.dat <- HiCcompare::hicpro2bedpe(WT_M_S1.mat, WT_M_S1.bed)
+rm(WT_M_S1.bed)
+rm(WT_M_S1.mat)
+gc(TRUE)
+
+
+WT_F_S2.bed <- fread(file.path(hicResDir1, "matrix/WT_F_S2/raw/100000/WT_F_S2_100000_abs.bed"), stringsAsFactors = TRUE)
+WT_F_S2.mat <- fread(file.path(hicResDir1, "matrix/WT_F_S2/raw/100000/WT_F_S2_100000.matrix"), stringsAsFactors = TRUE)
+setDF(WT_F_S2.bed)
+setDF(WT_F_S2.mat)
+WT_F_S2.dat <- HiCcompare::hicpro2bedpe(WT_F_S2.mat, WT_F_S2.bed)
+rm(WT_F_S2.bed)
+rm(WT_F_S2.mat)
+gc(TRUE)
+
+
+TKO_M_S3.bed <- fread(file.path(hicResDir1, "matrix/TKO_F_S3/raw/100000/TKO_F_S3_100000_abs.bed"), stringsAsFactors = TRUE)
+TKO_M_S3.mat <- fread(file.path(hicResDir1, "matrix/TKO_F_S3/raw/100000/TKO_F_S3_100000.matrix"), stringsAsFactors = TRUE)
+setDF(TKO_M_S3.bed)
+setDF(TKO_M_S3.mat)
+TKO_M_S3.dat <- HiCcompare::hicpro2bedpe(TKO_M_S3.mat, TKO_M_S3.bed)
+rm(TKO_M_S3.bed)
+rm(TKO_M_S3.mat)
+gc(TRUE)
+
+TKO_F_S4.bed <- fread(file.path(hicResDir1, "matrix/TKO_F_S4/raw/100000/TKO_F_S4_100000_abs.bed"), stringsAsFactors = TRUE)
+TKO_F_S4.mat <- fread(file.path(hicResDir1, "matrix/TKO_F_S4/raw/100000/TKO_F_S4_100000.matrix"), stringsAsFactors = TRUE)
+setDF(TKO_F_S4.bed)
+setDF(TKO_F_S4.mat)
+TKO_F_S4.dat <- HiCcompare::hicpro2bedpe(TKO_F_S4.mat, TKO_F_S4.bed)
+rm(TKO_F_S4.bed)
+rm(TKO_F_S4.mat)
+gc(TRUE)
+
+keep.chr <- paste0("chr", c(1:19, 'X'))
+# convert to BEDPE
+# NOTE: hicpro2bedpe returns a list of lists. 
+#   The first list, dat$cis, contains the intrachromosomal contact matrices
+# NOTE: dat$trans contains the interchromosomal 
+#   contact matrix which is not used in multiHiCcompare.
+
+getSparse <- function(x){
+  dt <- eval(parse(text=(paste0(x, '.dat$cis'))))
+  dt <- setnames(data.table(do.call(rbind, dt)[, c('chr1','start1','start2','IF')]),
+                 c('chr', 'region1', 'region2', 'IF'))[as.character(chr) %chin% keep.chr]
+  dt$chr <- droplevels(dt$chr)
+  dt
+}
+
+WT_M_S1.o <- getSparse('WT_M_S1')
+WT_F_S2.o <- getSparse('WT_F_S2')
+TKO_M_S3.o <- getSparse('TKO_M_S3')
+TKO_F_S4.o <- getSparse('TKO_F_S4')
+
+hicexp1 <- make_hicexp(WT_M_S1.o , WT_F_S2.o, TKO_M_S3.o, TKO_F_S4.o, 
+                       groups = c(0, 0, 1, 1), 
+                       zero.p = 0.8, A.min = 5, filter = TRUE,
+                       remove.regions = mm10_blacklist)
+
+
+# MD plots before normalization
+MD_hicexp(hicexp1, plot.chr=1, plot.loess=TRUE)
+hicexp1 <- cyclic_loess(hicexp1, verbose = TRUE, parallel = TRUE, span = 0.2)
+MD_hicexp(hicexp1, plot.chr=1, plot.loess=TRUE)
+
+hicexp1 <- hic_exactTest(hicexp1, p.method = 'fdr', parallel = TRUE)
+saveRDS(hicexp1, file.path(hicResDir1, "H1_WT_vs_TKO_HiC_multiHiCcompare_exp_100k.Rds"))
+
+```
+
+
+
+
+
+```{r CScores, eval = FALSE}
+## 100k version:
+## adjusted sign of CScore to match the A/B compartments based on gene density per chromosome, as determined using HiTC
+
+WT <- rtracklayer::import(file.path(hicResDir2, "WT_CScore100k__cscore.bedgraph"))
+score(WT)[as.character(seqnames(WT)) %in% paste0("chr", c(2,3,8:10, 15:18))] <- -score(WT)[as.character(seqnames(WT)) %in% paste0("chr", c(2,3,8:10, 15:18))]
+WT <- matchSeqlevels(WT, range=seqlvls)
+rtracklayer::export(WT, file.path(hicResDir2, "WT_CScore100k__cscore_corrected.bedgraph"))
+
+TKO <- rtracklayer::import(file.path(hicResDir2, "TKO_CScore100k__cscore.bedgraph"))
+score(TKO)[as.character(seqnames(TKO)) %in% paste0("chr", c(1:3,9,11,13,14))] <- -score(TKO)[as.character(seqnames(TKO)) %in% paste0("chr", c(1:3,9,11,13,14))]
+TKO <- matchSeqlevels(TKO, range=seqlvls)
+rtracklayer::export(TKO, file.path(hicResDir2, "TKO_CScore100k__cscore_corrected.bedgraph"))
+
+
+```
+
+
+
+
+```{r, eval=FALSE }
+### using CscoreTool PCA results: 
+WT <- rtracklayer::import(file.path(hicResDir2, "WT_CScore100k__cscore_corrected.bedgraph"))
+WT <- as.data.table(WT)
+WT[, id:= paste0(seqnames, "_",   start , "_", end)][,`:=` (seqnames = NULL, start = NULL, end=NULL, width=NULL, strand=NULL)]
+TKO <- rtracklayer::import(file.path(hicResDir2, "TKO_CScore100k__cscore_corrected.bedgraph"))
+TKO <- as.data.table(TKO)
+TKO[, id:= paste0(seqnames, "_",   start , "_", end)]
+
+resdt <- merge(WT, TKO, by = "id")
+WT <- NULL
+TKO <- NULL
+setnames(resdt, old=c("score.x", "score.y"), new=c("wt", "tko"))
+resdt[, `:=`(score = wt, 
+             deltaCS = tko - wt,
+             condensation = factor(sign(wt), labels=c("condensed", "open")),
+             TKO.condensation = factor(sign(tko), labels=c("condensed", "open")))]
+resdt[, name := make.unique(toupper(substr(as.character(condensation), 1,1)))]
+resdt[, group := "unchanged"]
+resdt[deltaCS < -.25 & sign(wt) != sign(tko), group := "A_to_B"]
+resdt[deltaCS > .25 & sign(wt) != sign(tko), group := "B_to_A"]
+resdt[deltaCS < -.25 & sign(wt) == sign(tko), group := "compaction"]
+resdt[deltaCS > .25 & sign(wt) == sign(tko), group := "decompaction"]
+resdt[, group := factor(group, c("B_to_A", "decompaction", "unchanged", "compaction", "A_to_B"))]
+saveRDS(resdt, file.path(baseDir, "Cscore_100k_WT_and_CTKO_combined.Rds"))
+hic <- makeGRangesFromDataFrame(resdt, keep.extra.columns = TRUE)
+hic <- matchSeqlevels(hic, range=seqlvls)
+
+hicexp1 <- readRDS(file.path(hicResDir1, "H1_WT_vs_TKO_HiC_multiHiCcompare_exp_100k.Rds"))
+rdt <- merge(hicexp1@hic_table, hicexp1@comparison, by= c("chr","region1","region2","D"))
+rdt[, `:=` (id=paste0("chr", chr, "_", region1+1, "_", region1+100000), id2 = paste0("chr", chr, "_", region2+1, "_", region2+100000))]
+rdt[, `:=` (WT = rowMeans(rdt[, .(IF1, IF2)]), 
+            TKO = rowMeans(rdt[, .(IF3, IF4)]), 
+            dist = region2 - region1, 
+            sign = sign(logFC))]
+rm(hicexp1)
+gc(full=TRUE)
+RDT <- merge(resdt, rdt, by="id")
+RDT <- RDT[, filter := fifelse(abs(logFC) > 1 & p.adj < 1e-10 & logCPM > 5, TRUE, FALSE)]
+RDT <- merge(RDT, resdt[, .(id, wt, tko, deltaCS, condensation, TKO.condensation, group)], by.x="id2", by.y="id", all.x = TRUE)
+setnames(RDT, gsub(".y$", "2", colnames(RDT)))
+setnames(RDT, gsub(".x$", "", colnames(RDT)))
+setkeyv(RDT, c("id", "p.adj"))
+RDT[, iid := paste(id, id2, sep="__")]
+RDT2 <- copy(RDT)
+RDT2[, c("seqnames", "start", "end") := tstrsplit(id2, "_", 3)]
+
+Rgr <- makeGRangesFromDataFrame(RDT, keep.extra.columns = TRUE, seqnames.field = "seqnames")
+Rgr2 <- makeGRangesFromDataFrame(RDT2, keep.extra.columns = TRUE, seqnames.field = "seqnames")
+Rgr <- matchSeqlevels(Rgr, range = seqlvls, sort = FALSE)
+Rgr2 <- matchSeqlevels(Rgr2, range = seqlvls, sort = FALSE)
+
+Rgr <- as(lapply(GRangesList(Rgr), function(x){
+  a=pctOvl(R1=x, R2=cHMMlrl$`Type 1`, cn="Type 1", R1.name="id")
+  a=pctOvl(R1=a, R2=cHMMlrl$`Type 2`, cn="Type 2", R1.name="id")
+  a=pctOvl(R1=a, R2=cHMMlrl$`Type 3`, cn="Type 3", R1.name="id")
+  a
+}), "GRangesList")[[1]]
+
+Rgr2 <- as(lapply(GRangesList(Rgr2), function(x){
+  a=pctOvl(R1=x, R2=cHMMlrl$`Type 1`, cn="Type 1", R1.name="id")
+  a=pctOvl(R1=a, R2=cHMMlrl$`Type 2`, cn="Type 2", R1.name="id")
+  a=pctOvl(R1=a, R2=cHMMlrl$`Type 3`, cn="Type 3", R1.name="id")
+  a
+}), "GRangesList")[[1]]
+
+stopifnot(identical(Rgr$iid, Rgr2$iid))
+
+Rgr$Type1 <- Rgr2$`Type 1`
+Rgr$Type2 <- Rgr2$`Type 2`
+Rgr$Type3 <- Rgr2$`Type 3`
+RDT <- as.data.table(Rgr)
+RDT[, iid:=NULL]
+setkey(RDT, id.old)
+saveRDS(RDT, file.path(hicResDir1, "combined_HiC_table_100k_new.Rds"))
+```
+
+
+```{r Fig3E_data}
+RDT <- readRDS(file.path(hicResDir1, "combined_HiC_table_100k_new.Rds"))
+DT <- RDT[(sign(wt) !=sign(wt2)) & p.adj <.01][,.(WT, TKO, logFC)]
+# ggplot(DT, 
+#        aes(x=WT, y=TKO, color=logFC)) +
+#   coord_fixed() +
+#   geom_point(alpha=.5, size=2, stroke = 0)+
+#   scale_color_gradient2(low="darkblue", mid="grey70", high="darkred")+
+#   geom_abline(intercept = 0, slope = 1, colour="black", linetype="longdash")+
+#   geom_smooth(se = FALSE, span=.25, linetype=1, size=1.2, color="#d613c3", method = "loess") +
+#   labs(x = "WT", y = "cTKO", title = "sign(wt) !=sign(wt2) & p.adj <.01")  +
+#   cowplot::theme_cowplot()+
+#   theme(axis.text.x=element_text(angle=90, vjust=.5, hjust=1))
+
+
+table(DT$logFC > 0)
+```
+
+
+
+```{r Fig2B}
+resdt <- readRDS(file.path(baseDir, "Cscore_100k_WT_and_CTKO_combined.Rds"))
+library(ggrastr)
+    ggplot(resdt[group=="unchanged"], aes(x=wt, y=tko)) +
+      coord_fixed() +
+      geom_point_rast(alpha=.25, shape=20, size=2, stroke = 0)+
+      geom_point_rast(data=resdt[group!="unchanged"], mapping=aes(x=wt, y=tko, colour=group, fill=group), 
+                      inherit.aes = FALSE, alpha=.25, shape=20, size=2, stroke = 0)+
+      geom_vline(xintercept=0, size=1) + 
+      geom_hline(yintercept=0, size=1)+
+      geom_abline(intercept = 0, slope = 1, colour="black", linetype="longdash")+
+      geom_abline(intercept = .25, slope = 1, colour="#787878", linetype="dashed")+
+      geom_abline(intercept = -.25, slope = 1, colour="#787878", linetype="dashed")+
+      scale_colour_manual(values=c("#0000ff", "#00aaff", "#ff7272", "#bc0000"))+
+      geom_smooth(data=resdt, se = FALSE, method="loess", span = .2, linetype=1, size=1.6, color="#d613c3") +
+      scale_fill_manual(values=c("#0000ff", "#00aaff", "#ff7272", "#bc0000"))+
+      guides(color=guide_legend(override.aes = list(size=10, alpha=1), title="change"), fill=FALSE)+
+      labs(x = "WT", y = "cTKO")  +
+      cowplot::theme_cowplot()+
+      theme(axis.text.x=element_text(angle=90, vjust=.5, hjust=1))
+    # ggsave(file.path(hicResDir1, "CScore_cTKO_vs_WT_100k_scatterplot_new_Figure3B.pdf"), width = 6.48, height=4.5)
+
+table(resdt$group)
+
+
+```
+
+
+```{r}
+cHMMlrl <- split(cHMMlr, cHMMlr$name)
+## split into type 2 and 3
+resdgr <- makeGRangesFromDataFrame(resdt, keep.extra.columns = TRUE)
+
+resdgr <- as(lapply(GRangesList(resdgr), function(x){
+  a=pctOvl(R1=x,
+           R2=cHMMlrl$`Type 1`, cn="Type 1", R1.name="id")
+  a=pctOvl(R1=a,
+           R2=cHMMlrl$`Type 2`, cn="Type 2", R1.name="id")
+  a=pctOvl(R1=a,
+           R2=cHMMlrl$`Type 3`, cn="Type 3", R1.name="id")
+  a
+}), "GRangesList")[[1]]
+
+t2 <- as.data.table(resdgr[resdgr$`Type 2` > (.95*100000)])
+t3 <- as.data.table(resdgr[resdgr$`Type 3` > (.95*100000)])
+```
+
+```{r FigS5K}
+ggplot(t3[group=="unchanged"], aes(x=wt, y=tko)) +
+      coord_fixed() +
+      geom_point_rast(alpha=.25, shape=20, size=2, stroke = 0)+
+      geom_point_rast(data=t3[group!="unchanged"], mapping=aes(x=wt, y=tko, colour=group, fill=group), 
+                      inherit.aes = FALSE, alpha=.25, shape=20, size=2, stroke = 0)+
+      geom_vline(xintercept=0, size=1) + 
+      geom_hline(yintercept=0, size=1)+
+      geom_abline(intercept = 0, slope = 1, colour="black", linetype="longdash")+
+      geom_abline(intercept = .25, slope = 1, colour="#787878", linetype="dashed")+
+      geom_abline(intercept = -.25, slope = 1, colour="#787878", linetype="dashed")+
+      scale_colour_manual(values=c("#0000ff", "#00aaff", "#ff7272", "#bc0000"))+
+      geom_smooth(data=t3, se = FALSE, method="loess", span = .2, linetype=1, size=1.6, color="#d613c3") +
+      scale_fill_manual(values=c("#0000ff", "#00aaff", "#ff7272", "#bc0000"))+
+      guides(color=guide_legend(override.aes = list(size=10, alpha=1), title="change"), fill=FALSE)+
+      labs(x = "WT", y = "cTKO")  +
+      cowplot::theme_cowplot()+
+      theme(axis.text.x=element_text(angle=90, vjust=.5, hjust=1))
+# ggsave(file.path(hicResDir1, "CScore_cTKO_vs_WT_100k_scatterplot_C3_new_FigureS5K.pdf"), width = 6.48, height=4.5)
+
+table(t3$group)
+```
+
+
+```{r FigS5L}
+ggplot(t2[group=="unchanged"], aes(x=wt, y=tko)) +
+  coord_fixed() +
+  geom_point_rast(alpha=.25, shape=20, size=2, stroke = 0)+
+  geom_point_rast(data=t2[group!="unchanged"], mapping=aes(x=wt, y=tko, colour=group, fill=group), 
+                  inherit.aes = FALSE, alpha=.25, shape=20, size=2, stroke = 0)+
+  geom_vline(xintercept=0, size=1) + 
+  geom_hline(yintercept=0, size=1)+
+  geom_abline(intercept = 0, slope = 1, colour="black", linetype="longdash")+
+  geom_abline(intercept = .25, slope = 1, colour="#787878", linetype="dashed")+
+  geom_abline(intercept = -.25, slope = 1, colour="#787878", linetype="dashed")+
+  scale_colour_manual(values=c("#0000ff", "#00aaff", "#ff7272", "#bc0000"))+
+  geom_smooth(data=t2, se = FALSE, method="loess", span = .2, linetype=1, size=1.6, color="#d613c3") +
+  scale_fill_manual(values=c("#0000ff", "#00aaff", "#ff7272", "#bc0000"))+
+  guides(color=guide_legend(override.aes = list(size=10, alpha=1), title="change"), fill=FALSE)+
+  labs(x = "WT", y = "cTKO")  +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x=element_text(angle=90, vjust=.5, hjust=1))
+# ggsave(file.path(hicResDir1, "CScore_cTKO_vs_WT_100k_scatterplot_C2_new_FigureS3H.pdf"), width = 6.48, height=4.5)
+
+table(t2$group)
+```
+
+
+```{r}
+# HiC score by chromHMM name:
+hi_c <- rtracklayer::import(file.path(hicResDir2, "WT_CScore25k__cscore_corrected.bedgraph"))
+hi_c$condensation <- factor(sign(hi_c$score), labels=c("condensed", "open"))
+hi_c <- as(hi_c, "GRanges")
+cHMM$score <- getViewMeans(NULL, hi_c, gr=cHMM, seqlvls=seqlvls)
+cHMMl <- split(cHMM, cHMM$type)
+```
+
+
+```{r FigS5I}
+hi_c$name <- make.unique(toupper(substr(as.character(hi_c$condensation), 1,1)))
+HiC <- hi_c
+HiC <- matchSeqlevels(HiC, range=seqlvls)
+HiC <- split(HiC, HiC$condensation)
+
+# chromHMM2 <- splitGR(chromHMM, width = 200, withMcols = TRUE)
+# chromHMM2$ID <- data.table(ID=chromHMM2$ID)[, ID2:= paste0(ID, "_", seq_len(.N)), by=ID]$ID2
+# fwrite(as.data.table(chromHMM2), file.path(baseDir, "chromHMM/Model1_restr/chromHMM_model_200bp_splits.txt.gz"), sep='\t')
+chromHMM2 <- fread(file.path(baseDir, "chromHMM/Model1_restr/chromHMM_model_200bp_splits.txt.gz"))
+chromHMM2 <- makeGRangesFromDataFrame(chromHMM2, keep.extra.columns = TRUE)
+chromHMM2$name <- factor(chromHMM2$name, cHMM_lvls)
+chromHMM2$type <- "Type 1"
+chromHMM2[chromHMM2$name %in% c("E10", "E12", "E9", "E8", "E11", "E7")]$type <- "Type 2"
+chromHMM2[chromHMM2$name %in% c("E3", "E1", "E6", "E5", "E2")]$type <- "Type 3"
+chromHMM2$type <- factor(chromHMM2$type)
+
+type.sizes <- c(total = sum(as.numeric(width(chromHMM2))), 
+                type1 = sum(as.numeric(width(chromHMM2[chromHMM2$type=="Type 1"]))),
+                type2 = sum(as.numeric(width(chromHMM2[chromHMM2$type=="Type 2"]))),
+                type3 = sum(as.numeric(width(chromHMM2[chromHMM2$type=="Type 3"]))))
+
+cHMM.cond <- subsetByOverlaps(chromHMM2, HiC$condensed, type="within")
+cHMM.open <- subsetByOverlaps(chromHMM2, HiC$open, type="within")
+
+type.sizes.open <- c(total = sum(as.numeric(width(cHMM.open))), 
+                type1 = sum(as.numeric(width(cHMM.open[cHMM.open$type=="Type 1"]))),
+                type2 = sum(as.numeric(width(cHMM.open[cHMM.open$type=="Type 2"]))),
+                type3 = sum(as.numeric(width(cHMM.open[cHMM.open$type=="Type 3"]))))
+
+type.sizes.condensed <- c(total = sum(as.numeric(width(cHMM.cond))), 
+                     type1 = sum(as.numeric(width(cHMM.cond[cHMM.cond$type=="Type 1"]))),
+                     type2 = sum(as.numeric(width(cHMM.cond[cHMM.cond$type=="Type 2"]))),
+                     type3 = sum(as.numeric(width(cHMM.cond[cHMM.cond$type=="Type 3"]))))
+
+type.dt <- data.table(Type = c("Total", "Type 1", "Type 2", "Type 3"),
+                      total=type.sizes,
+                      open = type.sizes.open,
+                      condensed = type.sizes.condensed)
+# fwrite(type.dt, file.path(baseDir, "FigureS3J_data.csv"))
+
+ggplot(melt(type.dt[-1,], id.vars = "Type"), aes(x=variable, y=value, fill=Type)) + 
+    geom_bar(stat="identity") +
+    theme_classic() +
+    theme(axis.text.x = element_text( size=14, margin=margin(5,5,10,5,"pt"), angle=0, vjust=0.5, hjust=0.5),
+          axis.text=element_text(size=15, colour="black"),
+          axis.title.y=element_text(lineheight=5, angle=90, vjust=0, size=15, margin=margin(0,10,0,0)),
+          axis.ticks.length =unit(1, "mm"),
+          axis.text.y = element_text( size=15, margin=margin(5,5,10,5,"pt")),
+          legend.text = (element_text(size=15)),
+          legend.position="bottom") +
+    xlab("Chromatin State") + 
+  ylab("No. of Base Pairs") +
+    scale_fill_manual(values=c("#616161","#0000ff", "#fb0006"))+
+  scale_y_continuous(labels=function(n){format(n, scientific = TRUE)})
+  # scale_y_continuous(name="No. of Base Pairs", labels = scales::comma)
+# ggsave(filename = file.path(baseDir, "ChromHMM_200bp_coverage_AB_compartment_HiC25k_Figure_S5I.pdf"), width=4.5, height=5)
+knitr::kable(type.dt)
+
+```
+
+
+```{r, eval = FALSE}
+plotScoresPC <- function(GR){
+  require(ggnewscale)
+  getMeansCHHM <- function(x, gr, mc.cores=4){
+    require(parallel)
+    a <- mclapply(levels(gr$name), function(y) getViewMeans(x=y, bw=x, gr=gr), mc.cores=mc.cores)
+    names(a) <- levels(gr$name)
+    data.table(value=unlist(a, use.names = FALSE),
+               name=factor(rep(names(a), lengths(a)), unique(rep(names(a), lengths(a)))))
+  }
+  cH1 <- lapply(HiC, getMeansCHHM, gr=GR, mc.cores=4)
+  
+  cHMM.means2 <- rbindlist(cH1, idcol = "variable")
+  cH1 <- NULL
+  cHMM.means2$type <- "Type 1"
+  cHMM.means2[cHMM.means2$name %in% c("E10", "E12", "E9", "E8", "E11", "E7")]$type <- "Type 2"
+  cHMM.means2[cHMM.means2$name %in% c("E3", "E1", "E6", "E5", "E2")]$type <- "Type 3"
+  cHMM.means2$type <- factor(cHMM.means2$type)
+  cHMM.m2 <- cHMM.means2[!duplicated(cHMM.means2[,-c("variable", "value")]),]
+  
+  
+  p1 <- ggplot(cHMM.means2, ordered=TRUE, aes(x=name, y=value, fill =  variable)) +
+    geom_violin(position=position_dodge(width = 0.6), width=.6, scale="width", alpha=.5 ) +
+    geom_boxplot( position=position_dodge(width = .6), width=.3, outlier.size = -1) +
+    theme_classic() +
+    theme(axis.text=element_text(size=15, colour="black")) +
+    theme(axis.title.y=element_text(lineheight=5, angle=90, vjust=0, size=15, margin=margin(0,10,0,0)))+
+    theme(axis.ticks.length =unit(1, "mm")) +
+    theme(axis.text.x = element_text( size=15, margin=margin(5,5,10,5,"pt")),
+          axis.text.y = element_text( size=15, margin=margin(5,5,10,5,"pt")))+
+    xlab("Chromatin State") + ylab("Average Cscore per fragment") +
+    theme(legend.text = (element_text(size=15))) +
+    theme(legend.position="bottom") +
+    scale_fill_manual(values=ExpressSurv::pickPal(1)[c(1,2)]) +
+    theme(panel.spacing= unit(1.3, "lines"))+
+    theme(legend.text = element_text(size=15),
+          legend.title=element_text(size=15), strip.text = element_text(size=15)) +
+    new_scale_fill() +
+    geom_tile(data=cHMM.m2, aes(x = name, y = 1, height = Inf, width = 1, fill=type), alpha = 0.08)+
+    scale_fill_manual(values=c("#606060", "blue", "red"))                 
+  return(list(plot=p1, dt=cHMM.means2))
+}
+
+cH <- plotScoresPC(chromHMM2)
+saveRDS(cH, file.path(baseDir, "Violin_plot_data_for_Figure_S5J.Rds"))
+```
+
+
+```{r FigS5J}
+library(ggtext)
+cH <- readRDS(file.path(baseDir, "Violin_plot_data_for_Figure_S5J.Rds"))
+# pdf(file.path(baseDir, "CScores_chromHMM_200bp_open_vs_condensed_plot_Figure_S5J.pdf"), width = 7.45833, height=4.54167 )
+# cH$plot 
+# dev.off()
+
+cH$plot 
+```
+
+
+```{r Fig2CD, fig.width=12, fig.height=6}
+hic <- makeGRangesFromDataFrame(resdt, keep.extra.columns = TRUE)
+plotBio <- function(x, plot.genes=TRUE, trackheights=c(2,2,2,3)){
+  require(ggbio)
+  y <- strsplit(gsub(",", "", x), split=":|-")[[1]]
+  show.ranges <- GRanges(y[1], IRanges(as.numeric(y[2]), as.numeric(y[3])), strand="*")
+  cH <- sort(unlist(cHMMlrl))
+  cH$name <- factor(cH$name)
+  hic.ranges <- subsetByOverlaps(
+    sort(hic), 
+    show.ranges, 
+    , type="any")
+  hic.ranges  <- restrict(hic.ranges, start(show.ranges), end(show.ranges), keep.all.ranges = TRUE)
+  cHMM.ranges <- subsetByOverlaps(cH, show.ranges)
+  cHMM.ranges <- restrict(cHMM.ranges, start(show.ranges), end(show.ranges), keep.all.ranges = TRUE)
+    wh <- range(show.ranges, ignore.strand=TRUE)
+  ap1 <- autoplot(
+    hic.ranges, geom = "bar", aes(y=wt, fill = condensation), title="WT") +
+    ylim(-1,1)+
+    scale_fill_manual(values = c("red", "blue"), drop=FALSE)
+  ap1a <- autoplot(
+    hic.ranges, geom = "bar", aes(y=tko, fill = TKO.condensation), title="TKO") +
+    ylim(-1,1) +
+    scale_fill_manual(values = c("red", "blue"), drop=FALSE)
+  ap2 <- autoplot(cHMM.ranges, geom = "bar", aes(fill = name)) +
+    scale_fill_manual(values = c("black", "blue", "red"), drop=FALSE) 
+  if(plot.genes){
+    require(Mus.musculus)
+    ap3 <- autoplot(Mus.musculus, which = wh, gap.geom="chevron", colunms="GENENAME")
+    tracks(WT=ap1, TKO=ap1a, chromHMM=ap2, genes=ap3, heights=trackheights, title=x)
+  } else {
+    tracks(WT=ap1, TKO=ap1a, chromHMM=ap2, heights=trackheights[1:3], title=x)
+  }
+}
+
+print(plotBio("chr18:17264674-22901194", plot.genes=TRUE))
+print(plotBio("chr6:91313705-94091682", plot.genes=TRUE))
+```
+
+
+
+```{r find_boundary_regions}
+win = 20E3
+t2=trim(GrowRanges(reduce(GrowRanges(cHMMl[[3]], const=win/2, both =TRUE)), both=TRUE, const= -win/2)) ## fix from cHMMl[[2]] to 3!
+t2[start(t2) ==(win/2) +1] <- GrowRanges(t2[start(t2) ==(win/2) +1], upstream = win/2)
+elementMetadata(t2)$name <- "C3" ## fix: from C2 to C3
+
+t1 <- GenomicRanges::setdiff(mm.sel, t2)
+t1$score <- 200
+t2$score <- 1000
+elementMetadata(t1)$name <- "C2"  ## fix: from C1 to C2
+c12 <- sort(c(t1, t2))
+c12$w <- NULL
+c12$name <- factor(c12$name)
+c12$ID <- make.names(c12$name, unique = TRUE)
+strand(c12) <- "+"
+c12$thickStart <- start(c12)
+c12$thickEnd <- end(c12)
+c12$itemRgb <- "0,0,0"
+c12[c12$name == "C2"]$itemRgb <- "0,0,255"
+c12[c12$name == "C3"]$itemRgb <- "255,0,0"
+c12$score <- 1000
+bigw = 1E5
+c12f <- c12[width(c12) >= bigw]
+c1f <- c12f[c12f$name == "C2"]
+c2f <- c12f[c12f$name == "C3"]
+
+
+## find type I ol w/ type II on 3'end:
+c12f.ol.f <-
+  findOverlaps(GrowRanges(c1f, downstream = 1, both = FALSE), c2f)
+c12f.f <-
+  reduce(c(
+    resize(
+      c1f[queryHits(c12f.ol.f)],
+      width = bigw,
+      fix = "end",
+      use.names = TRUE,
+      ignore.strand = FALSE
+    ),
+    resize(
+      c2f[subjectHits(c12f.ol.f)],
+      width = bigw,
+      fix = "start",
+      use.names = TRUE,
+      ignore.strand = FALSE
+    )
+  ))
+
+## find type I ol w/ type II on 5'end:
+c12f.ol.r <-
+  findOverlaps(GrowRanges(c1f, upstream = 1, both = FALSE), c2f)
+c12f.r <-
+  reduce(c(
+    resize(
+      c1f[queryHits(c12f.ol.r)],
+      width = bigw,
+      fix = "start",
+      use.names = TRUE,
+      ignore.strand = FALSE
+    ),
+    resize(
+      c2f[subjectHits(c12f.ol.r)],
+      width = bigw,
+      fix = "end",
+      use.names = TRUE,
+      ignore.strand = FALSE
+    )
+  ))
+strand(c12f.r) <- "-"
+c12f.c <- sort(c(c12f.f, c12f.r), ignore.strand = TRUE)
+c12f.c$score <- ifelse(strand(c12f.c) == "+", 1000, 500)
+c12f.c <- matchSeqlevels(c12f.c, range = seqlvls)
+
+```
+
+
+```{r FigS5H_data, eval=FALSE}
+
+WT <-
+  processBed(
+    file.path(atacDir, "CD8_WT.bed.gz"),
+    grl = split(chromHMM, chromHMM$name),
+    idcolname = "State",
+    type = "within",
+    ref = Mmusculus,
+    range = c(1:21)
+  )
+gc(full = TRUE)
+cTKO <-
+  processBed(
+    file.path(atacDir, "CD8_cTKO.bed.gz"),
+    grl = split(chromHMM, chromHMM$name),
+    idcolname = "State",
+    type = "within",
+    ref = Mmusculus,
+    range = c(1:21)
+  )
+gc(full = TRUE)
+total.readsf <- c(WT = attr(WT, 'total.reads'),
+                 cTKO = attr(cTKO, 'total.reads'))
+allStatesf <-
+  rbindlist(list(WT = WT, cTKO = cTKO),
+            use.names = TRUE,
+            idcol = "genotype")
+rm(list = c("WT", "cTKO"))
+allStatesf$genotype <-
+  factor(allStatesf$genotype, unique(allStatesf$genotype))
+gc(full = TRUE)
+fwrite(data.table(do.call(cbind, as.list(total.readsf))), 
+       file.path(atacDir, "Fragment_lengths_by_chromHMM_CTKO_vs_WT_new_total_reads.csv"))
+fwrite(allStatesf,
+       file.path(atacDir, "Fragment_lengths_by_chromHMM_CTKO_vs_WT_new.csv.gz"))
+
+```
+
+
+
+```{r}
+
+total.readsf <- unlist(fread(file.path(atacDir, "Fragment_lengths_by_chromHMM_CTKO_vs_WT_new_total_reads.csv")))
+allStatesf <- fread(file.path(atacDir, "Fragment_lengths_by_chromHMM_CTKO_vs_WT_new.csv.gz"))
+allStatesf[, `:=` (genotype = factor(genotype, unique(genotype)),
+                   State= factor(State, cHMM_lvls))]
+
+allStatesf.summary2 <- get.state.summary(mygroup = 'State', total.reads=total.readsf, 
+                                         grl = split(chromHMM, chromHMM$name), dt = allStatesf)
+```
+
+
+
+```{r FigS5H, fig.width=8.5, fig.height=6}
+allGf <- split(allStatesf, allStatesf$State)
+plotStates(allStatesf.summary2, state='State', xlim=c(0, 1010), ylim=c(.1, 5e3), text.size=15, 
+           strip.text.size=10, facet_col=5, mypal=c("#585858", "#E31A1C"), hline=100)
+```
+
+
+
+
+```{r}
+allStatesf[, `:=` (type = factor(fcase(State %in%  c("E10", "E12", "E9", "E8", "E11", "E7"), 'Type 2',
+                                  State %in%  c("E3", "E1", "E6", "E5", "E2"), 'Type 3',
+                                  default = 'Type 1')))]
+
+allStatesf.summary2 <- get.state.summary(mygroup = 'type', total.reads=total.readsf, 
+                                         grl = split(chromHMM, chromHMM$type), dt = allStatesf)
+
+
+```
+
+
+```{r Fig2G, fig.width=8.5, fig.height=6}
+allGft <- split(allStatesf, allStatesf$type)
+
+plotStates(allStatesf.summary2, state='type', xlim=c(0, 1010), ylim=c(.1, 5e3), text.size=15, strip.text.size=10, facet_col=3,
+           mypal=c("#585858", "#E31A1C"), hline=NULL)
+# ggsave(filename = file.path(atacDir, "NRL_CTKO_vs_WT_by_chromHMM_type.pdf"), width= 5, height=3.5)
+```
+
+```{r, eval=FALSE}
+pdf(file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_type___.pdf"),
+    width=8.5, height=6, 
+    title = "Read distribution plot WT vs cTKO chromHMM NRL")
+  lapply(seq_along(allGft), function(x) huntplot(allGft[[x]], do.plot=TRUE,
+                                              sample.fraction =  (min(total.readsf)/total.readsf),
+                                              file=FALSE, title=names(allGft)[x]))
+  dev.off()
+```
+
+
+```{r, eval=FALSE}
+nrlsf <- lapply(seq_along(allGft), function(x) huntplot(allGft[[x]], do.plot=F,
+                                                       sample.fraction =  (min(total.readsf)/total.readsf),
+                                                       file=FALSE, title=names(allGft)[x]))
+names(nrlsf) <- names(allGft)
+
+cat('', file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.txt'), append = FALSE)
+cat('\nCombined samples:\n',
+    file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.txt'), 
+    append =TRUE)
+  for(j in seq_along(allGft)){
+    for (i in seq_along(names(nrlsf[[j]]))){
+      cat(paste0(
+        names(allGf)[[j]],': ', 
+        names(nrlsf[[j]])[i], ' ', 
+        ': maxes: ', paste((nrlsf[[j]][[i]]$maxes)[-1], collapse=', '), 
+        '; mins: ', paste((nrlsf[[j]][[i]]$mins), collapse=', '), '; auc: ', nrlsf[[j]][[i]]$auc, '\n'
+      ),
+      file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.txt'), 
+      append =TRUE)
+    }
+    cat('\n',
+        file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.txt'), 
+        append =TRUE)
+}
+
+system(paste0("enscript -B --margins=10:10: -o ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.ps"), " -f Courier@7.3/10 ",file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.txt")))
+system(paste0("ps2pdfwr ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.ps"), " ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.pdf")))
+file.remove( file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.ps"))
+file.remove( file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics_type__.txt"))
+```
+
+
+
+
+
+```{r, eval=FALSE}
+pdf(file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt___.pdf"),
+    width=8.5, height=6, 
+    title = "Read distribution plot WT vs cTKO chromHMM NRL")
+  lapply(seq_along(allGf), function(x) huntplot(allGf[[x]], do.plot=TRUE,
+                                              sample.fraction =  (min(total.readsf)/total.readsf),
+                                              file=FALSE, title=names(allGf)[x]))
+  dev.off()
+```
+
+
+```{r, eval=FALSE}
+nrlsf <- lapply(seq_along(allGf), function(x) huntplot(allGf[[x]], do.plot=F,
+                                                       sample.fraction =  (min(total.readsf)/total.readsf),
+                                                       file=FALSE, title=names(allGf)[x]))
+names(nrlsf) <- names(allGf)
+
+cat('', file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.txt'), append = FALSE)
+cat('\nCombined samples:\n',
+    file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.txt'), 
+    append =TRUE)
+  for(j in seq_along(allGf)){
+    for (i in seq_along(names(nrlsf[[j]]))){
+      cat(paste0(
+        names(allGf)[[j]],': ', 
+        names(nrlsf[[j]])[i], ' ', 
+        ': maxes: ', paste((nrlsf[[j]][[i]]$maxes)[-1], collapse=', '), 
+        '; mins: ', paste((nrlsf[[j]][[i]]$mins), collapse=', '), '; auc: ', nrlsf[[j]][[i]]$auc, '\n'
+      ),
+      file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.txt'), 
+      append =TRUE)
+    }
+    cat('\n',
+        file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.txt'), 
+        append =TRUE)
+}
+
+system(paste0("enscript -B --margins=10:10: -o ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.ps"), " -f Courier@7.3/10 ",file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.txt")))
+system(paste0("ps2pdfwr ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.ps"), " ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.pdf")))
+file.remove( file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.ps"))
+file.remove( file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_replicates_hunt_metrics___.txt"))
+```
+
+
+```{r HiCTADs}
+beds <- list.files(path=hicResDir2, pattern = "OnTAD_WT50norm.*.bed", full.names = TRUE)
+beds <- beds[c(1, 12:19, 2:11, 21:22)]
+
+tads <- list.files(path=hicResDir2, pattern = "OnTAD_WT50norm.*.tad", full.names = TRUE)
+tads <- tads[c(1, 12:19, 2:11, 21:22)]
+
+ots <- rbindlist(lapply(seq_along(beds), 
+  function(i) cbind(fread(beds[[i]], skip=1, col.names = c("chr","start", "end"), select = 1:3), 
+                    fread(tads[[i]], col.names = c('TADlevel','TADmean',"TADscore"), skip=1, select = 3:5))))
+ots <- makeGRangesFromDataFrame(ots, keep.extra.columns = TRUE, starts.in.df.are.0based = TRUE)
+ots <- matchSeqlevels(ots, range=1:19)
+
+# WT <- rtracklayer::import(file.path(hicResDir2, "WT_CScore100k__cscore_corrected.bedgraph"))
+# WT <- matchSeqlevels(WT, range=1:19)
+# TKO <- rtracklayer::import(file.path(hicResDir2, "TKO_CScore100k__cscore_corrected.bedgraph"))
+# TKO <- matchSeqlevels(TKO, range=1:19)
+
+WT <- rtracklayer::import(file.path(hicResDir2, "WT_CScore25k__cscore_corrected.bedgraph"))
+WT <- matchSeqlevels(WT, range=1:19)
+TKO <- rtracklayer::import(file.path(hicResDir2, "TKO_CScore25k__cscore_corrected.bedgraph"))
+TKO <- matchSeqlevels(TKO, range=1:19)
+
+ots$WT <- getViewMeans(NULL, WT, gr=ots, seqlvls=1:19)
+ots$TKO <- getViewMeans(NULL, TKO, gr=ots, seqlvls=1:19)
+ots$WT.comp <- "A"
+ots$TKO.comp <- "A"
+ots[sign(ots$WT)==-1]$WT.comp <- "B"
+ots[sign(ots$TKO)==-1]$TKO.comp <- "B"
+ots$switch <- NA_character_
+ots[ots$TKO.comp=="B" & ots$WT.comp == "A"]$switch <- "A-B"
+ots[ots$TKO.comp=="A" & ots$WT.comp == "B"]$switch <- "B-A"
+ots[ots$TKO.comp=="A" & ots$WT.comp == "A"]$switch <- "A"
+ots[ots$TKO.comp=="B" & ots$WT.comp == "B"]$switch <- "B"
+ots$deltaCS <- ots$TKO-ots$WT
+
+
+resdt <- as.data.table(ots)[TADlevel==1]
+resdt[, group := "unchanged"]
+resdt[deltaCS < -.25 & sign(WT) != sign(TKO), group := "A to B"]
+resdt[deltaCS > .25 & sign(WT) != sign(TKO), group := "B to A"]
+resdt[deltaCS < -.25 & sign(WT) == sign(TKO), group := "compaction"]
+resdt[deltaCS > .25 & sign(WT) == sign(TKO), group := "decompaction"]
+resdt[, group := factor(group, c("B to A", "decompaction", "unchanged", "compaction", "A to B"))]
+```
+
+
+```{r FigS5C}
+ggplot(resdt[group=="unchanged"], aes(x=WT, y=TKO)) +
+  coord_fixed() +
+  geom_point(alpha=.25, shape=20, size=4, stroke = 0)+
+  geom_point(data=resdt[group!="unchanged"], mapping=aes(x=WT, y=TKO, colour=group, fill=group), 
+             inherit.aes = FALSE, alpha=.25, shape=20, size=4, stroke = 0)+
+  geom_vline(xintercept=0, size=1) + 
+  geom_hline(yintercept=0, size=1)+
+  geom_abline(intercept = 0, slope = 1, colour="black", linetype="longdash")+
+  geom_abline(intercept = .25, slope = 1, colour="#787878", linetype="dashed")+
+  geom_abline(intercept = -.25, slope = 1, colour="#787878", linetype="dashed")+
+  scale_colour_manual(values=c("#0000ff", "#00aaff", "#ff7272", "#bc0000"))+
+  geom_smooth(data=resdt, se = FALSE, method="loess", span = .2, linetype=1, size=1.6, color="#d613c3") +
+  scale_fill_manual(values=c("#0000ff", "#00aaff", "#ff7272", "#bc0000"))+
+  guides(color=guide_legend(override.aes = list(size=10, alpha=1), title="change"), fill=FALSE)+
+  labs(x = "WT", y = "cTKO")  +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x=element_text(angle=90, vjust=.5, hjust=1))
+table(resdt$group)
+
+
+
+```
+
+
+```{r FigS5D}
+ggplot(resdt[group=="unchanged"], aes(x=deltaCS, y=width)) +
+  geom_point(alpha=.25, shape=20, size=1.4, stroke = 0) +
+  geom_point(data=resdt[group!="unchanged"], mapping=aes(x=deltaCS, y=width, colour=group, fill=group), 
+             inherit.aes = FALSE, alpha=.4, shape=20, size=1.4, stroke = 0)+
+  geom_smooth(data=resdt, se = FALSE, method="loess", span = .2, linetype=1, size=1, color="#d613c3") +
+  cowplot::theme_cowplot()+
+  labs(y="TAD size [Mb]", x=expression(Delta * " Cscore"))+
+  geom_vline(xintercept=0, linetype=2) +
+  scale_y_continuous(labels = seq(0,12,by=3), breaks = seq(0,12,by=3) * 10^6)
+```
+
+
+```{r calculateSCC}
+library(hicrep)
+mat1 <- hic2mat(file.path(hicResDir2, "WT_M_S1.allValidPairs.hic"), "2", "2", resol=1e5)
+mat2 <- hic2mat(file.path(hicResDir2, "WT_F_S2.allValidPairs.hic"), "2", "2", resol=1e5)
+mat3 <- hic2mat(file.path(hicResDir2, "TKO_M_S3.allValidPairs.hic"), "2", "2", resol=1e5)
+mat4 <- hic2mat(file.path(hicResDir2, "TKO_F_S4.allValidPairs.hic"), "2", "2", resol=1e5)
+
+h_value <- htrain(mat1, mat2, resol = 100000, lbr = 0, ubr = 5000000, range = 0:10)
+
+# Compute SCC for one chromosome
+scc.out.12 = get.scc(mat1, mat2, resol = 100000, h=2)
+scc.out.34 = get.scc(mat3, mat4, resol = 100000, h=2)
+scc.out.13 = get.scc(mat1, mat3, resol = 100000, h=2)
+scc.out.24 = get.scc(mat2, mat4, resol = 100000, h=2)
+
+data.frame(SCC_WT1_vs_WT2 = scc.out.12$scc,
+           SCC_cTKO1_vs_cTKO2 = scc.out.34$scc,
+           SCC_WT1_vs_cTKO1 = scc.out.13$scc,
+           SCC_WT2_vs_cTKO2 = scc.out.24$scc)
+```
+
+
+```{r calculateFigS5E}
+## TAD boundaries:
+
+otsF <- sort(ots)
+strand(otsF) <- "+"
+otsF <- otsF[abs(otsF$deltaCS) > .25]
+
+## test if up- and downstream are A or B compartment:
+
+# upstream flanks
+fup <- findOverlapPairs(WT, flank(otsF, width = 25e3, start=TRUE, both=FALSE))
+stopifnot(identical(ranges(fup@first), ranges(flank(otsF, width = 25e3, start=TRUE, both=FALSE))))
+otsF$up <- fup@first$score
+
+# downstream flanks
+fdn <- findOverlapPairs(WT, flank(otsF, width = 25e3, start=FALSE, both=FALSE))
+otsF <- otsF[match(ranges(fdn@first), ranges(flank(otsF, width = 25e3, start=FALSE, both=FALSE)), nomatch=0)]
+stopifnot(identical(ranges(fdn@first), ranges(flank(otsF, width = 25e3, start=FALSE, both=FALSE))))
+otsF$dn <- fdn@first$score
+
+# select boundaries at start and end of TADs
+otsR <- otsF
+strand(otsR) <- "-"
+ABstarts <- sort(unique(c(promoters(otsF, upstream = 2e5, downstream= 2e5), 
+                          promoters(otsR, upstream = 2e5, downstream= 2e5))),
+                 ignore.strand=TRUE)
+
+# keep only A-B boundaries
+ABstarts <- ABstarts[(ABstarts$WT.comp =="A" & as.character(strand(ABstarts)) == "+" & ABstarts$up < 0)|
+                       (ABstarts$WT.comp =="B" & as.character(strand(ABstarts)) == "+" & ABstarts$up > 0) | 
+                       (ABstarts$WT.comp =="A" & as.character(strand(ABstarts)) == "-" & ABstarts$dn < 0) | 
+                       (ABstarts$WT.comp =="B" & as.character(strand(ABstarts)) == "-" & ABstarts$dn > 0)]
+
+# calculate mean WT and cTKO Cscores across A-B TAD boundaries
+WTcov <- Views(coverage(WT, weight = "score"), ABstarts)
+stopifnot(identical(seqlevels(ABstarts), names(WTcov)))
+WTcov <- WTcov[sapply(WTcov, length) > 0]
+stopifnot(identical(unname(sapply(WTcov, length)), seqnames(ABstarts)@lengths))
+
+TKOcov <- Views(coverage(TKO, weight = "score"), ABstarts)
+stopifnot(identical(seqlevels(ABstarts), names(TKOcov)))
+TKOcov <- TKOcov[sapply(TKOcov, length) > 0]
+stopifnot(identical(unname(sapply(TKOcov, length)), seqnames(ABstarts)@lengths))
+
+getChrAvg2 <- function(chr = "chr1", c1 = WTcov){
+  t(sapply(seq_along(c1[[chr]]), function(x) as(c1[[chr]][[x]], "vector")))
+}
+
+
+WTcov.avg <- parallel::mclapply(names(WTcov), function(u) getChrAvg2(chr=u), mc.cores=6)
+WTcov.avg <- do.call( "rbind", WTcov.avg)
+WTcov.avg[(ABstarts$WT.comp =="A" & as.character(strand(ABstarts)) == "+")|
+            (ABstarts$WT.comp =="B" & as.character(strand(ABstarts)) == "-"),] <- 
+  WTcov.avg[(ABstarts$WT.comp =="A" & as.character(strand(ABstarts)) == "+")|
+              (ABstarts$WT.comp =="B" & as.character(strand(ABstarts)) == "-"), ncol(WTcov.avg):1]
+
+TKOcov.avg <- parallel::mclapply(names(TKOcov), function(u) getChrAvg2(chr=u, c1=TKOcov), mc.cores=6)
+TKOcov.avg <- do.call( "rbind", TKOcov.avg)
+TKOcov.avg[(ABstarts$WT.comp =="A" & as.character(strand(ABstarts)) == "+")|
+             (ABstarts$WT.comp =="B" & as.character(strand(ABstarts)) == "-"),] <- 
+  TKOcov.avg[(ABstarts$WT.comp =="A" & as.character(strand(ABstarts)) == "+")|
+               (ABstarts$WT.comp =="B" & as.character(strand(ABstarts)) == "-"), ncol(TKOcov.avg):1]
+
+cbs <- CutBySize(ncol(WTcov.avg), nb = ncol(WTcov.avg)/25E3)
+cbs.mid <- cbs[, 1] + floor((cbs[,2]-cbs[,1])/2)
+cbs.mid2 <- cbs.mid - 2e5
+cbs <- lapply(seq_len(nrow(cbs)), function(i) cbs[i, 1:2])
+WTcov.avg2 <- sapply(cbs, function(x) rowMeans(WTcov.avg[, x[["lower"]]:x[["upper"]]]))
+TKOcov.avg2 <- sapply(cbs, function(x) rowMeans(TKOcov.avg[, x[["lower"]]:x[["upper"]]]))
+
+
+covM2 <- rbindlist(list(WT = reshape2::melt(WTcov.avg2), 
+                        CTKO = reshape2::melt(TKOcov.avg2)), 
+                   idcol = "Genotype")
+covM2m <- covM2[, mean(value, trim=0.0), by=c("Genotype", "Var2")]
+covM2m$Var2 <- rep(cbs.mid2, 2)/1000
+covM2m$Genotype <- relevel(factor(covM2m$Genotype), "WT")
+```
+
+
+```{r FigS5E}
+ggplot(covM2m, aes(x=Var2, y=V1, by=Genotype, colour=Genotype)) +
+  geom_point() + 
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 15, colour = "black"),
+    axis.ticks.length = unit(1, "mm"),
+    axis.title.y = element_text(
+      lineheight = 5,
+      angle = 90,
+      vjust = 0,
+      size = 15,
+      margin = margin(0, 10, 0, 0)),
+    axis.text.x = element_text(
+      size = 15,
+      margin = margin(5, 5, 10, 5, "pt"),
+      angle = 90,
+      vjust=0.5
+    ),
+    axis.text.y = element_text(size = 15, margin = margin(5, 5, 10, 5, "pt")),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    strip.text = element_text(size = 15),
+    legend.position = "bottom") +
+  xlab("Distance from contig boundary [kb]") +
+  ylab(expression("Average CScore")) +
+  scale_colour_manual(values = c("#585858", "#E31A1C")) +
+  geom_smooth(method = "loess", span = .7, se = FALSE)+
+  scale_x_discrete(name ="Distance from TAD boundary [kb]", 
+                   limits=seq(-200, 200, by=10))+
+  annotate("text", x=-60, y=-0.25, label = 'A', size=8, col='blue') + 
+  annotate("text", x=60, y=-0.25, label = 'B', size=8, col='red') +
+  annotate("rect", xmin=-200, xmax=0, ymin=-Inf, ymax=Inf, alpha=.15, fill="blue")+
+  annotate("rect", xmin=0, xmax=200, ymin=-Inf, ymax=Inf, alpha=.15, fill="red")
+
+
+```
+
+
+
+```{r ChIPSeq_data}
+K27me3 <- GRangesList(
+    wt1 = rtracklayer::import(file.path(baseDir, "chipDir/H3K27me3_ctko_vs_wt_exp2/H3K27me3-s1-rep0.bw")),
+    wt2 = rtracklayer::import(file.path(baseDir, "chipDir/H3K27me3_ctko_vs_wt_exp2/H3K27me3-s1-rep1.bw")),
+    ctko1 = rtracklayer::import(file.path(baseDir, "chipDir/H3K27me3_ctko_vs_wt_exp2/H3K27me3-s2-rep0.bw")),
+    ctko2 = rtracklayer::import(file.path(baseDir, "chipDir/H3K27me3_ctko_vs_wt_exp2/H3K27me3-s2-rep1.bw"))
+)
+
+K36me2 <- GRangesList(
+    wt1 = rtracklayer::import(file.path(baseDir, "chipDir/H3K36me2_ctko_vs_wt_exp2/H3K36me2-s1-rep0.bw")),
+    wt2 = rtracklayer::import(file.path(baseDir, "chipDir/H3K36me2_ctko_vs_wt_exp2/H3K36me2-s1-rep1.bw")),
+    ctko1 = rtracklayer::import(file.path(baseDir, "chipDir/H3K36me2_ctko_vs_wt_exp2/H3K36me2-s2-rep0.bw")),
+    ctko2 = rtracklayer::import(file.path(baseDir, "chipDir/H3K36me2_ctko_vs_wt_exp2/H3K36me2-s2-rep1.bw"))
+)
+names(K27me3) <- paste0("H3K27me3_", names(K27me3))
+names(K36me2) <- paste0("H3K36me2_", names(K36me2))
+```
+
+
+
+```{r Fig4BC_data, eval=FALSE}
+getMeansCHHM <- function(x, gr=chromHMM, mc.cores = 1){
+    a <- mclapply(levels(gr$name), function(y) getViewMeans(x=y, bw=x, gr=gr), mc.cores=mc.cores)
+    names(a) <- levels(gr$name)
+    data.table(value=unlist(a, use.names = FALSE),
+        name=factor(rep(names(a), lengths(a)), unique(rep(names(a), lengths(a)))))
+}
+cHMM.means <- c(lapply(K27me3, getMeansCHHM), lapply(K36me2, getMeansCHHM))
+
+cHMM.means <- rbindlist(cHMM.means, idcol = "variable")
+cHMM.means[,`:=`(Mark=factor(gsub("_.*", "", cHMM.means$variable)),
+    GT=relevel(factor(toupper(gsub("(\\w+_)(.*)(1|2)", "\\2",cHMM.means$variable))), "WT"))]
+cHMM.means[, value := value * 5] # per kb, not per 200bp fragment
+
+cHMM.means$type <- "Type 1"
+cHMM.means[cHMM.means$name %in% c("E10", "E12", "E9", "E8", "E11", "E7")]$type <- "Type 2"
+cHMM.means[cHMM.means$name %in% c("E3", "E1", "E6", "E5", "E2")]$type <- "Type 3"
+cHMM.means$type <- factor(cHMM.means$type)
+cHMM.means$name <- factor(cHMM.means$name, paste0("E", c(4, 13:15,7:12, 1:3,5:6)))
+saveRDS(cHMM.means, file.path(baseDir, "FigS6EF_Data.Rds"))
+```
+
+
+
+```{r FigS6EF}
+cHMM.means23 <- readRDS(file.path(baseDir, "FigS6EF_Data.Rds"))
+cHMM.means23 <- cHMM.means23[type != "Type 1"]
+cHMM.means23[, type := droplevels(type)]
+
+ggplot(cHMM.means23, ordered=TRUE, aes(x=name, y=log2(value+1), fill =  GT)) +
+    # geom_violin(position=position_dodge(width = 0.6), width=.6, scale="width", alpha=.5 ) +
+    geom_boxplot( position=position_dodge(width = .7), width=.6, outlier.size = -1) +
+    theme_classic() +
+    coord_cartesian(ylim=c(0,10))+
+    theme(axis.text=element_text(size=15, colour="black")) +
+    theme(axis.title.y=element_text(lineheight=5, angle=90, vjust=0, size=15, margin=margin(0,10,0,0)))+
+    theme(axis.ticks.length =unit(1, "mm")) +
+    theme(axis.text.x = element_text( size=15, margin=margin(5,5,10,5,"pt"), angle=90, vjust = .5, hjust=1),
+        axis.text.y = element_text( size=15, margin=margin(5,5,10,5,"pt")))+
+    xlab("Chromatin State") + ylab(expression(log[2] * " ((Signal/kb) +1)")) +
+    theme(legend.text = (element_text(size=15))) +
+    theme(legend.position="bottom") +
+  scale_fill_manual(values=ExpressSurv::pickPal(1)[c(1,2)]) +
+    facet_wrap(~Mark, ncol =1)+
+    theme(panel.spacing= unit(1.3, "lines"))+
+    theme(legend.text = element_text(size=15),
+        legend.title=element_text(size=15), strip.text = element_text(size=15)) 
+# ggsave(file=file.path(baseDir, "K27_K36_ChIP-seq_by_type_genotype_and_chromHMM_FigureS6EF_no_1.pdf"), width = 6, height = 7)
+
+```
+
+```{r Fig3C_data, eval=FALSE}
+### get H3K27 and K36 signal over c12f.c[strand(c12f.c)=="+"]
+gc(full=TRUE)
+
+K27WT.vi1 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_wt1, range=seqlvls), weight = "score"), c12f.c)
+K27WT.vi2 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_wt2, range=seqlvls), weight = "score"), c12f.c)
+stopifnot(identical(seqlevels(c12f.c), names(K27WT.vi1)))
+stopifnot(identical(seqlevels(c12f.c), names(K27WT.vi2)))
+K27WT.vi1 <- K27WT.vi1[sapply(K27WT.vi1, length) > 0]
+K27WT.vi2 <- K27WT.vi2[sapply(K27WT.vi2, length) > 0]
+stopifnot(identical(unname(sapply(K27WT.vi1, length)), seqnames(c12f.c)@lengths))
+stopifnot(identical(unname(sapply(K27WT.vi2, length)), seqnames(c12f.c)@lengths))
+
+K27CTKO.vi1 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_ctko1, range=seqlvls), weight = "score"), c12f.c)
+K27CTKO.vi2 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_ctko2, range=seqlvls), weight = "score"), c12f.c)
+stopifnot(identical(seqlevels(c12f.c), names(K27CTKO.vi1)))
+stopifnot(identical(seqlevels(c12f.c), names(K27CTKO.vi2)))
+K27CTKO.vi1 <- K27CTKO.vi1[sapply(K27CTKO.vi1, length) > 0]
+K27CTKO.vi2 <- K27CTKO.vi2[sapply(K27CTKO.vi2, length) > 0]
+stopifnot(identical(unname(sapply(K27CTKO.vi1, length)), seqnames(c12f.c)@lengths))
+stopifnot(identical(unname(sapply(K27CTKO.vi2, length)), seqnames(c12f.c)@lengths))
+
+
+K36WT.vi1 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_wt1, range=seqlvls), weight = "score"), c12f.c)
+K36WT.vi2 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_wt2, range=seqlvls), weight = "score"), c12f.c)
+stopifnot(identical(seqlevels(c12f.c), names(K36WT.vi1)))
+stopifnot(identical(seqlevels(c12f.c), names(K36WT.vi2)))
+K36WT.vi1 <- K36WT.vi1[sapply(K36WT.vi1, length) > 0]
+K36WT.vi2 <- K36WT.vi2[sapply(K36WT.vi2, length) > 0]
+stopifnot(identical(unname(sapply(K36WT.vi1, length)), seqnames(c12f.c)@lengths))
+stopifnot(identical(unname(sapply(K36WT.vi2, length)), seqnames(c12f.c)@lengths))
+K36WT.vi1 <- K36WT.vi1[sapply(K36WT.vi1, length) > 0]
+K36WT.vi2 <- K36WT.vi2[sapply(K36WT.vi2, length) > 0]
+
+K36CTKO.vi1 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_ctko1, range=seqlvls), weight = "score"), c12f.c)
+K36CTKO.vi2 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_ctko2, range=seqlvls), weight = "score"), c12f.c)
+stopifnot(identical(seqlevels(c12f.c), names(K36CTKO.vi1)))
+stopifnot(identical(seqlevels(c12f.c), names(K36CTKO.vi2)))
+K36CTKO.vi1 <- K36CTKO.vi1[sapply(K36CTKO.vi1, length) > 0]
+K36CTKO.vi2 <- K36CTKO.vi2[sapply(K36CTKO.vi2, length) > 0]
+stopifnot(identical(unname(sapply(K36CTKO.vi1, length)), seqnames(c12f.c)@lengths))
+stopifnot(identical(unname(sapply(K36CTKO.vi2, length)), seqnames(c12f.c)@lengths))
+
+getAvg <- function(x1, x2){
+  rowMeans(cbind(as(x1, "vector"), as(x2, "vector")), na.rm=TRUE)
+}
+
+getChrAvg <- function(chr = "chr1", c1=K27WT.vi1, c2=K27WT.vi2){
+  t(sapply(seq_along(c1[[chr]]), function(x) getAvg(c1[[chr]][[x]], c1[[chr]][[x]])))
+}
+
+K27WT.avg <- parallel::mclapply(names(K27WT.vi1) , function(u) getChrAvg(chr=u), mc.cores=6)
+K27WT.avg <- do.call( "rbind",K27WT.avg)
+K27WT.avg[as.character(strand(c12f.c))=="-",] <- K27WT.avg[as.character(strand(c12f.c))=="-", ncol(K27WT.avg):1]
+
+
+K27CTKO.avg <- parallel::mclapply(names(K27CTKO.vi1) , function(u) getChrAvg(chr=u, c1=K27CTKO.vi1, c2=K27CTKO.vi2), mc.cores=6)
+K27CTKO.avg <- do.call( "rbind",K27CTKO.avg)
+K27CTKO.avg[as.character(strand(c12f.c))=="-",] <- K27CTKO.avg[as.character(strand(c12f.c))=="-", ncol(K27CTKO.avg):1]
+
+K27M <- rbindlist(list(WT= melt(K27WT.avg), CTKO=melt(K27CTKO.avg)), idcol = "Genotype")
+
+
+K36WT.avg <- parallel::mclapply(names(K36WT.vi1) , function(u) getChrAvg(chr=u, c1=K36WT.vi1, c2=K36WT.vi2), mc.cores=6)
+K36WT.avg <- do.call( "rbind",K36WT.avg)
+K36WT.avg[as.character(strand(c12f.c))=="-",] <- K36WT.avg[as.character(strand(c12f.c))=="-", ncol(K36WT.avg):1]
+
+K36CTKO.avg <- parallel::mclapply(names(K36CTKO.vi1) , function(u) getChrAvg(chr=u, c1=K36CTKO.vi1, c2=K36CTKO.vi2), mc.cores=6)
+K36CTKO.avg <- do.call( "rbind",K36CTKO.avg)
+K36CTKO.avg[as.character(strand(c12f.c))=="-",] <- K36CTKO.avg[as.character(strand(c12f.c))=="-", ncol(K36CTKO.avg):1]
+
+
+
+cbs <- CutBySize(ncol(K27WT.avg), nb = ncol(K27WT.avg)/2E3)
+cbs <- lapply(seq_len(nrow(cbs)), function(i) cbs[i,1:2])
+K27WT.avg2 <- sapply(cbs, function(x) rowMeans(K27WT.avg[, x[["lower"]]:x[["upper"]]]))
+K27CTKO.avg2 <- sapply(cbs, function(x) rowMeans(K27CTKO.avg[, x[["lower"]]:x[["upper"]]]))
+
+cbs <- CutBySize(ncol(K36WT.avg), nb = ncol(K36WT.avg)/2E3)
+cbs <- lapply(seq_len(nrow(cbs)), function(i) cbs[i,1:2])
+K36WT.avg2 <- sapply(cbs, function(x) rowMeans(K36WT.avg[, x[["lower"]]:x[["upper"]]]))
+K36CTKO.avg2 <- sapply(cbs, function(x) rowMeans(K36CTKO.avg[, x[["lower"]]:x[["upper"]]]))
+
+
+K27M <- rbindlist(list(WT= melt(K27WT.avg2), CTKO=melt(K27CTKO.avg2)), idcol = "Genotype")
+K27Mm <- K27M[, mean(value, trim=0.0), by=c("Genotype", "Var2")]
+K27Mm$Var2 <- rep(seq(-99e3, 99e3, by=2e3), 2)/1000
+K27Mm$Genotype <- relevel(factor(K27Mm$Genotype), "WT")
+
+K36M <- rbindlist(list(WT= melt(K36WT.avg2), CTKO=melt(K36CTKO.avg2)), idcol = "Genotype")
+K36Mm <- K36M[, mean(value, trim=0.0), by=c("Genotype", "Var2")]
+K36Mm$Var2 <- rep(seq(-99e3, 99e3, by=2e3), 2)/1000
+K36Mm$Genotype <- relevel(factor(K36Mm$Genotype), "WT")
+
+fwrite(rbindlist(list(H3K27me3=K27Mm, H3K36me2=K36Mm), idcol = "Mark"), file.path(baseDir, "Data_for_Figure_3C.csv"))
+```
+
+
+```{r Fig3C, fig.width=9, fig.height=5}
+F3Cdata <- fread(file.path(baseDir, "Data_for_Figure_3C.csv"))
+ 
+pg3 <- ggplot(F3Cdata[Mark=="H3K27me3"], aes(x=Var2, y=V1, by=Genotype, colour=Genotype)) +
+  geom_point() + 
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 15, colour = "black"),
+    axis.ticks.length = unit(1, "mm"),
+    axis.title.y = element_text(
+      lineheight = 5,
+      angle = 90,
+      vjust = 0,
+      size = 15,
+      margin = margin(0, 10, 0, 0)),
+    axis.text.x = element_text(
+      size = 15,
+      margin = margin(5, 5, 10, 5, "pt"),
+      angle = 90,
+      vjust=0.5
+    ),
+    axis.text.y = element_text(size = 15, margin = margin(5, 5, 10, 5, "pt")),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    strip.text = element_text(size = 15),
+    legend.position = "bottom") +
+  xlab("Distance from contig boundary [kb]") +
+  ylab(expression("Average H3K27me3 signal")) +
+  scale_colour_manual(values = c("#585858", "#E31A1C")) +
+  geom_smooth(method = "loess", span = 0.1, se = FALSE)+
+  scale_x_discrete(name ="Distance from contig boundary [kb]", 
+                   limits=seq(-100, 100, by=10))+
+  annotate("text", x=-60, y=5.5, label = 'Type 2', size=8, col='blue') + 
+  annotate("text", x=60, y=5.5, label = 'Type 3', size=8, col='red') +
+  annotate("rect", xmin=-100, xmax=0, ymin=-Inf, ymax=Inf, alpha=.15, fill="blue")+
+  annotate("rect", xmin=0, xmax=100, ymin=-Inf, ymax=Inf, alpha=.15, fill="red")
+
+
+
+pg4 <- ggplot(F3Cdata[Mark=="H3K36me2"], aes(x=Var2, y=V1, by=Genotype, colour=Genotype)) +
+  geom_point() + 
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 15, colour = "black"),
+    axis.ticks.length = unit(1, "mm"),
+    axis.title.y = element_text(
+      lineheight = 5,
+      angle = 90,
+      vjust = 0,
+      size = 15,
+      margin = margin(0, 10, 0, 0)),
+    axis.text.x = element_text(
+      size = 15,
+      margin = margin(5, 5, 10, 5, "pt"),
+      angle = 90,
+      vjust=0.5
+    ),
+    axis.text.y = element_text(size = 15, margin = margin(5, 5, 10, 5, "pt")),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    strip.text = element_text(size = 15),
+    legend.position = "bottom") +
+  xlab("Distance from contig boundary [kb]") +
+  ylab(expression("Average H3K36me2 signal")) +
+  scale_colour_manual(values = c("#585858", "#E31A1C")) +
+  geom_smooth(method = "loess", span = 0.15, se = FALSE) +
+  scale_x_discrete(name ="Distance from contig boundary [kb]", 
+                   limits=seq(-100, 100, by=10))+
+  annotate("text", x=-60, y=5.5, label = 'Type 2', size=8, col='blue') + 
+  annotate("text", x=60, y=5.5, label = 'Type 3', size=8, col='red')  +
+  annotate("rect", xmin=-100, xmax=0, ymin=-Inf, ymax=Inf, alpha=.15, fill="blue")+
+  annotate("rect", xmin=0, xmax=100, ymin=-Inf, ymax=Inf, alpha=.15, fill="red")
+
+cowplot::plot_grid(pg3, pg4, ncol=2)
+```
+
+
+```{r Fig3C_save, eval = FALSE}
+
+pdf(file.path(baseDir, "H3K27me3_and_H3K36me2_CD8_WT_vs_cTKO_profiles_contig_boundaries_Fig3C.pdf"),
+    width=9, height=4,
+    title = "H3K27me3 and H3K36me2 profiles over contig boundaries in CD8 WT vs cTKO")
+cowplot::plot_grid(pg3, pg4, ncol=2)
+dev.off()
+
+
+```
+
+```{r FigureS6G_calc, eval=FALSE}
+mye <- matchSeqlevels(cHMMl$`Type 2`, range=c(1:20))
+
+K27WT.vi1 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_wt1, range=c(1:20)), weight = "score"), mye)
+K27WT.vi2 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_wt2, range=c(1:20)), weight = "score"), mye)
+stopifnot(identical(seqlevels(mye), names(K27WT.vi1)))
+stopifnot(identical(seqlevels(mye), names(K27WT.vi2)))
+K27CTKO.vi1 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_ctko1, range=c(1:20)), weight = "score"), mye)
+K27CTKO.vi2 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_ctko2, range=c(1:20)), weight = "score"), mye)
+stopifnot(identical(seqlevels(mye), names(K27CTKO.vi1)))
+stopifnot(identical(seqlevels(mye), names(K27CTKO.vi2)))
+
+K36WT.vi1 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_wt1, range=c(1:20)), weight = "score"), mye)
+K36WT.vi2 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_wt2, range=c(1:20)), weight = "score"), mye)
+stopifnot(identical(seqlevels(mye), names(K36WT.vi1)))
+stopifnot(identical(seqlevels(mye), names(K36WT.vi2)))
+K36CTKO.vi1 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_ctko1, range=c(1:20)), weight = "score"), mye)
+K36CTKO.vi2 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_ctko2, range=c(1:20)), weight = "score"), mye)
+stopifnot(identical(seqlevels(mye), names(K36CTKO.vi1)))
+stopifnot(identical(seqlevels(mye), names(K36CTKO.vi2)))
+
+E7.diff.27 <- ((unname(unlist(viewMeans(K27CTKO.vi1))) + unname(unlist(viewMeans(K27CTKO.vi2))))/2) - 
+  ((unname(unlist(viewMeans(K27WT.vi1))) + unname(unlist(viewMeans(K27WT.vi2))))/2)
+E7.diff.36 <- ((unname(unlist(viewMeans(K36CTKO.vi1))) + unname(unlist(viewMeans(K36CTKO.vi2))))/2) - 
+  ((unname(unlist(viewMeans(K36WT.vi1))) + unname(unlist(viewMeans(K36WT.vi2))))/2)
+
+mye <- matchSeqlevels(cHMMl$`Type 3`, range=c(1:20))
+
+K27WT.vi1 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_wt1, range=c(1:20)), weight = "score"), mye)
+K27WT.vi2 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_wt2, range=c(1:20)), weight = "score"), mye)
+stopifnot(identical(seqlevels(mye), names(K27WT.vi1)))
+stopifnot(identical(seqlevels(mye), names(K27WT.vi2)))
+K27CTKO.vi1 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_ctko1, range=c(1:20)), weight = "score"), mye)
+K27CTKO.vi2 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_ctko2, range=c(1:20)), weight = "score"), mye)
+stopifnot(identical(seqlevels(mye), names(K27CTKO.vi1)))
+stopifnot(identical(seqlevels(mye), names(K27CTKO.vi2)))
+
+K36WT.vi1 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_wt1, range=c(1:20)), weight = "score"), mye)
+K36WT.vi2 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_wt2, range=c(1:20)), weight = "score"), mye)
+stopifnot(identical(seqlevels(mye), names(K36WT.vi1)))
+stopifnot(identical(seqlevels(mye), names(K36WT.vi2)))
+K36CTKO.vi1 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_ctko1, range=c(1:20)), weight = "score"), mye)
+K36CTKO.vi2 <- Views(coverage(matchSeqlevels(K36me2$H3K36me2_ctko2, range=c(1:20)), weight = "score"), mye)
+stopifnot(identical(seqlevels(mye), names(K36CTKO.vi1)))
+stopifnot(identical(seqlevels(mye), names(K36CTKO.vi2)))
+
+E5.diff.27 <- ((unname(unlist(viewMeans(K27CTKO.vi1))) + unname(unlist(viewMeans(K27CTKO.vi2))))/2) - 
+  ((unname(unlist(viewMeans(K27WT.vi1))) + unname(unlist(viewMeans(K27WT.vi2))))/2)
+E5.diff.36 <- ((unname(unlist(viewMeans(K36CTKO.vi1))) + unname(unlist(viewMeans(K36CTKO.vi2))))/2) - 
+  ((unname(unlist(viewMeans(K36WT.vi1))) + unname(unlist(viewMeans(K36WT.vi2))))/2)
+E7 <- data.table(H3K27me3=E7.diff.27, H3K36me2=E7.diff.36)
+E5 <- data.table(H3K27me3=E5.diff.27, H3K36me2=E5.diff.36)
+E57 <- rbindlist(list(t2=E7, t3=E5), idcol = "Category")
+fwrite(E57, file.path(baseDir, "FigS6G_data.csv.gz"))
+```
+
+
+```{r FigureS6G}
+E57 <- fread(file.path(baseDir, "FigS6G_data.csv.gz"))
+E57$Category <- factor(E57$Category, unique(E57$Category))
+# pdf(file.path(baseDir, "t1_t2_delta_K27me3_K36me2_FigureS6G.pdf"))
+ggplot(data=E57, aes(x=(H3K27me3), y=(H3K36me2), colour=Category)) +
+  geom_point_rast(aes(fill=Category, stroke=0), alpha=0.08, size=0.5) +
+  # stat_density2d(geom="density2d", 
+  #                # aes(alpha=1),
+  #                size=1.5,
+  #                contour=TRUE,
+  #                h=c(1,1)) +
+  scale_color_manual(values=c("t1"=pickPal(1)[1], "t2"=pickPal(1)[2])) +
+  xlim(c(-10,10))+
+  ylim(c(-10,10))+
+  theme_classic() +
+  geom_hline(yintercept=0) +
+  geom_vline(xintercept=0) +
+  theme(legend.position = "bottom") +
+  xlab("Avg H3K27me3 Signal CTKO - WT") + 
+  ylab("Avg H3K36me2 Signal CTKO - WT")+
+  theme(
+    axis.text = element_text(size = 15, colour = "black"),
+    axis.ticks.length = unit(1, "mm"),
+    axis.title.y = element_text(
+      lineheight = 5,
+      angle = 90,
+      vjust = 0,
+      size = 15,
+      margin = margin(0, 10, 0, 0)),
+    axis.text.x = element_text(
+      size = 15,
+      margin = margin(5, 5, 10, 5, "pt"),
+      angle = 90,
+      vjust=0.5
+    ),
+    axis.text.y = element_text(size = 15, margin = margin(5, 5, 10, 5, "pt"))
+  ) +
+  scale_colour_manual(values = c("blue", "red"))
+# dev.off()
+
+```
+
+
+
+
+
+```{r S8D_data}
+mm10genes.dt <- setnames(data.table::fread(file.path(baseDir, "refDir/GencodeVM20_genes.bed")),
+                         c("chr", "start", "end", "strand", "name", "symbol"))
+mm10genes.dt[, `:=` (chr = paste0("chr", chr), ensemblgene = gsub('\\..*', '', name))]
+convertMouseGeneList <- function(x, uniqueRows=TRUE){
+  require("biomaRt")
+  human <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  mouse <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+  
+  genesV2 <- getLDS(attributes = c("ensembl_gene_id"), filters = "ensembl_gene_id", values = x ,
+                   mart = mouse, attributesL = c("hgnc_symbol"), 
+                   martL = human, uniqueRows=uniqueRows)
+  out <- data.frame(MOUSE = x, HUGO=NA_character_, stringsAsFactors = FALSE) 
+  out$HUGO <- genesV2$HGNC.symbol[match(out$MOUSE, genesV2$Gene.stable.ID)]
+  return(out$HUGO) 
+}
+mm10genes.dt$HUGO <- convertMouseGeneList(mm10genes.dt$ensemblgene)
+
+
+
+mm10genes <- sort(makeGRangesFromDataFrame(mm10genes.dt, keep.extra.columns = TRUE), ignore.strand=TRUE)
+de.genes <- data.table::fread(file.path(baseDir, "rnaDir/deseq2_CD8_diffGenes_mm10.csv"))
+de.genes <- merge(de.genes, mm10genes.dt, all.x=TRUE, by="ensemblgene")
+setkey(de.genes, padj)
+
+allGenes <- sort(makeGRangesFromDataFrame(de.genes[!is.na(chr)], keep.extra.columns = TRUE), ignore.strand=TRUE)
+
+diffExpressed_top250_up <- sort(makeGRangesFromDataFrame(
+  head(de.genes[sign(log2FoldChange) == +1 & !is.na(chr) & !is.na(padj)], 250),
+  keep.extra.columns = TRUE), ignore.strand=TRUE)
+diffExpressed_top250_up.p <- promoters(diffExpressed_top250_up, up=200, down=200)
+diffExpressed_top250_up_ranges <- sort(matchSeqlevels(promoters(diffExpressed_top250_up.p, up=4800, down = 50200)), ignore.strand=TRUE)
+
+notDiffExpressed <- fread(file.path(baseDir, "rnaDir/genelists/notDiffExpressed_pt99_pt9_pValue.txt"), header=FALSE)
+notDiffExpressed <- de.genes[Symbol %in% notDiffExpressed$V1]
+
+notDiffExpressed <- sort(makeGRangesFromDataFrame(
+  notDiffExpressed[!is.na(chr) & !is.na(padj)],
+  keep.extra.columns = TRUE), ignore.strand=TRUE)
+
+notDiffExpressed.p <- promoters(notDiffExpressed, up=200, down=200)
+
+
+countChromHMMOverlaps <- function(x, grl=cHMMl, ignore.strand=TRUE){
+  lapply(grl, function(y) sum(as.numeric(width(GenomicRanges::intersect(x, y, ignore.strand=ignore.strand)))))
+}
+
+getChromHMMOverlaps <- function(x, grl=cHMMl, ignore.strand=TRUE){
+  lapply(grl, function(y) GenomicRanges::intersect(x, y, ignore.strand=ignore.strand))
+}
+
+myol.keep2 <- Reduce("c", getChromHMMOverlaps(diffExpressed_top250_up)[-1])
+
+DE.table <- rbindlist(list(
+  diffExpressed_top250_up = as.list(countChromHMMOverlaps(diffExpressed_top250_up.p)),
+  notDiffExpressed = as.list(countChromHMMOverlaps(notDiffExpressed.p))), idcol = "type")
+DE.table <- reshape2::melt(data.table(type = DE.table$type,
+                            prop.table(data.matrix(DE.table[,-"type"]), 1)), id.vars = "type")
+fwrite(DE.table, file.path(atacDir, "Figure_S8D_data.csv"))
+```
+
+
+
+
+```{r FigS8D}
+DE.table <- fread(file.path(atacDir, "Figure_S8D_data.csv"))
+
+ggplot(DE.table, aes(x=type, y=value, fill=variable)) +
+  geom_bar(position="stack", stat="identity",width = 0.9) +
+  scale_fill_manual(values=c("#606060", "blue", "red"), name="ChromHMM State") +
+  theme_classic() +
+  theme(axis.text=element_text(size=15, colour="black")) +
+  theme(axis.title.y=element_text(lineheight=5, angle=90, vjust=0,
+                                  size=15, margin=margin(0,10,0,0)))+
+  theme(axis.ticks.length =unit(1, "mm")) +
+  theme(axis.text.x = element_text( size=15,
+                                    margin=margin(5,5,10,5,"pt")))+
+  xlab("") + ylab("Fraction") + theme(legend.text =
+                                        (element_text(size=15)))
+# ggsave(filename = file.path(atacDir, "Figure_S8D_plot.pdf"), width=4, height=4)
+
+```
+
+
+```{r FigS8F_data, eval=FALSE}
+K27WT.vi1 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_wt1), weight = "score"), diffExpressed_top250_up_ranges)
+K27WT.vi2 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_wt2), weight = "score"), diffExpressed_top250_up_ranges)
+stopifnot(identical(seqlevels(diffExpressed_top250_up_ranges), names(K27WT.vi1)))
+stopifnot(identical(seqlevels(diffExpressed_top250_up_ranges), names(K27WT.vi2)))
+K27WT.vi1 <- K27WT.vi1[sapply(K27WT.vi1, length) > 0]
+K27WT.vi2 <- K27WT.vi2[sapply(K27WT.vi2, length) > 0]
+stopifnot(identical(unname(sapply(K27WT.vi1, length)), seqnames(diffExpressed_top250_up_ranges)@lengths))
+stopifnot(identical(unname(sapply(K27WT.vi2, length)), seqnames(diffExpressed_top250_up_ranges)@lengths))
+K27CTKO.vi1 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_ctko1), weight = "score"), diffExpressed_top250_up_ranges)
+K27CTKO.vi2 <- Views(coverage(matchSeqlevels(K27me3$H3K27me3_ctko2), weight = "score"), diffExpressed_top250_up_ranges)
+stopifnot(identical(seqlevels(diffExpressed_top250_up_ranges), names(K27CTKO.vi1)))
+stopifnot(identical(seqlevels(diffExpressed_top250_up_ranges), names(K27CTKO.vi2)))
+K27CTKO.vi1 <- K27CTKO.vi1[sapply(K27CTKO.vi1, length) > 0]
+K27CTKO.vi2 <- K27CTKO.vi2[sapply(K27CTKO.vi2, length) > 0]
+stopifnot(identical(unname(sapply(K27CTKO.vi1, length)), seqnames(diffExpressed_top250_up_ranges)@lengths))
+stopifnot(identical(unname(sapply(K27CTKO.vi2, length)), seqnames(diffExpressed_top250_up_ranges)@lengths))
+
+getAvg <- function(x1, x2){
+  rowMeans(cbind(as(x1, "vector"), as(x2, "vector")), na.rm=TRUE)
+}
+
+getChrAvg <- function(chr = "chr1", c1=K27WT.vi1, c2=K27WT.vi2){
+  t(sapply(seq_along(c1[[chr]]), function(x) getAvg(c1[[chr]][[x]], c1[[chr]][[x]])))
+}
+
+K27WT.avg <- parallel::mclapply(names(K27WT.vi1) , function(u) getChrAvg(chr=u), mc.cores=6)
+K27WT.avg <- do.call( "rbind",K27WT.avg)
+K27WT.avg[as.character(strand(diffExpressed_top250_up_ranges))=="-",] <- K27WT.avg[as.character(strand(diffExpressed_top250_up_ranges))=="-", ncol(K27WT.avg):1]
+
+
+K27CTKO.avg <- parallel::mclapply(names(K27CTKO.vi1) , function(u) getChrAvg(chr=u, c1=K27CTKO.vi1, c2=K27CTKO.vi2), mc.cores=6)
+K27CTKO.avg <- do.call( "rbind",K27CTKO.avg)
+K27CTKO.avg[as.character(strand(diffExpressed_top250_up_ranges))=="-",] <- K27CTKO.avg[as.character(strand(diffExpressed_top250_up_ranges))=="-", ncol(K27CTKO.avg):1]
+K27M <- rbindlist(list(WT= reshape2::melt(K27WT.avg), CTKO=melt(K27CTKO.avg)), idcol = "Genotype")
+
+
+cbs <- CutBySize(ncol(K27WT.avg), nb = ncol(K27WT.avg)/500)
+cbs <- lapply(seq_len(nrow(cbs)), function(i) cbs[i,1:2])
+K27WT.avg2 <- sapply(cbs, function(x) rowMeans(K27WT.avg[, x[["lower"]]:x[["upper"]]]))
+K27CTKO.avg2 <- sapply(cbs, function(x) rowMeans(K27CTKO.avg[, x[["lower"]]:x[["upper"]]]))
+
+K27M <- rbindlist(list(WT= reshape2::melt(K27WT.avg2), CTKO=melt(K27CTKO.avg2)), idcol = "Genotype")
+K27Mm <- K27M[, mean(value, trim=0.05), by=c("Genotype", "Var2")]
+K27Mm$Var2 <- rep(seq(-4750, 49750, by=500), 2)/1000
+K27Mm$Genotype <- relevel(factor(K27Mm$Genotype), "WT")
+
+fwrite(K27Mm, file.path(baseDir, "Data_for_Figure_S8F.csv.gz"))
+```
+
+
+
+```{r FigS8F, fig.width=6.5}
+K27Mm <- fread(file.path(baseDir, "Data_for_Figure_S8F.csv.gz"))
+K27Mm$Genotype <- relevel(factor(K27Mm$Genotype), "WT")
+
+ggplot(K27Mm, aes(x=Var2, y=V1, by=Genotype, colour=Genotype)) +
+  geom_point() +
+  scale_x_continuous(limits = c(-5, 50), expand = c(0, 0)) +
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 15, colour = "black"),
+    axis.ticks.length = unit(1, "mm"),
+    axis.title.y = element_text(
+      lineheight = 5,
+      angle = 90,
+      vjust = 0,
+      size = 15,
+      margin = margin(0, 10, 0, 0)),
+    axis.text.x = element_text(
+      size = 15,
+      margin = margin(5, 5, 10, 5, "pt"),
+      angle = 90,
+      vjust=0.5
+    ),
+    axis.text.y = element_text(size = 15, margin = margin(5, 5, 10,
+                                                          5, "pt")),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    strip.text = element_text(size = 15),
+    legend.position = "bottom") +
+  xlab("Distance from TSS [kb]") +
+  ylab(expression("Average H3K27me3 signal")) +
+  scale_colour_manual(values = c("#585858", "#E31A1C")) +
+  geom_smooth(method = "loess", span = 0.1, se = FALSE)
+
+# ggsave(filename = file.path(atacDir, "Figure_S8F_plot.pdf"), width= 5.6, height=3.8)
+
+```
+
+
+
+```{r FS8E_data, eval=FALSE}
+WT <- processBed(file.path(atacDir, "CD8_WT.bed.gz"),
+                  grl=GRangesList(myol.keep2), idcolname = "Category", type="within", range = c(1:20))
+
+cTKO <- processBed(file.path(atacDir, "CD8_cTKO.bed.gz"),
+                  grl=GRangesList(myol.keep2), idcolname = "Category", type="within", range = c(1:20))
+total.reads <- c(WT = attr(WT, 'total.reads'), cTKO = attr(cTKO, 'total.reads'))
+
+allStates <- rbindlist(list(WT=WT, cTKO=cTKO), use.names=TRUE, idcol = "genotype")
+
+rm(list=c("WT", "cTKO"))
+gc(full = TRUE)
+allStates$genotype <- factor(allStates$genotype, unique(allStates$genotype))
+
+fwrite(data.table(do.call(cbind, as.list(total.reads))), 
+       file.path(atacDir, "Fragment_lengths_by_chromHMM_CTKO_vs_WT_top250_genes_total_reads.csv"))
+fwrite(allStates,
+       file.path(atacDir, "Fragment_lengths_by_chromHMM_CTKO_vs_WT_top250_genes.csv.gz"))
+```
+
+
+```{r FigS8E}
+total.reads <- unlist(fread(file.path(atacDir, "Fragment_lengths_by_chromHMM_CTKO_vs_WT_top250_genes_total_reads.csv")))
+allStates <- fread(file.path(atacDir, "Fragment_lengths_by_chromHMM_CTKO_vs_WT_top250_genes.csv.gz"))
+allStates[, `:=` (genotype = factor(genotype, unique(genotype)),
+                  Category = factor(Category, labels = "top_250"))]
+
+allStates.summary2 <- get.state.summary(mygroup = 'Category', total.reads=total.reads,
+                                        grl = setNames(GRangesList(myol.keep2), "top_250"), dt = allStates)
+
+plotStates(allStates.summary2, state='Category', xlim=c(0, 1010), ylim=c(.1, 5e2), text.size=15, strip.text.size=10, facet_col=5,
+           mypal=c("#585858", "#E31A1C"), hline=NULL)
+# ggsave(filename = file.path(atacDir, "NRL_CTKO_vs_WT_top250_genes_gene_bodies.pdf"), width= 5, height=3.5)
+```
+
+
+
+```{r, eval=FALSE}
+pdf(file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt.pdf"),
+    width=8.5, height=6, 
+    title = "Read distribution plot WT vs cTKO chromHMM NRL in top 250 upregulated genes")
+ huntplot(allStates, do.plot=TRUE, sample.fraction =  (min(total.readsf)/total.readsf), file=FALSE, title="top_250", seed = 123)
+dev.off()
+```
+
+
+```{r, eval=FALSE}
+hp <- huntplot(allStates, do.plot=FALSE, sample.fraction =  (min(total.readsf)/total.readsf), file=FALSE, title="top_250", seed = 123)
+
+cat('', file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt.txt'), append = FALSE)
+cat('\nCombined samples:\n',
+    file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt.txt'), 
+    append =TRUE)
+    for (i in seq_along(names(hp))){
+      cat(paste0(
+        names(hp)[i], ' ', 
+        ': maxes: ', paste((hp[[i]]$maxes)[-1], collapse=', '), 
+        '; mins: ', paste((hp[[i]]$mins), collapse=', '), '; auc: ', hp[[i]]$auc, '\n'
+      ),
+      file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt.txt'), 
+      append =TRUE)
+    }
+    cat('\n',
+        file = file.path(atacDir, 'Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt.txt'), 
+        append =TRUE)
+
+system(paste0("enscript -B --margins=10:10: -o ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt_metrics.ps"), " -f Courier@7.3/10 ",file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt.txt")))
+system(paste0("ps2pdfwr ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt_metrics.ps"), " ", file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt_metrics.pdf")))
+file.remove( file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt_metrics.ps"))
+file.remove( file.path(atacDir, "Read_distribution_plot_WT_vs_cTKO_chromHMM_NRL_top250_hunt.txt"))
+
+
+```
+
+
+
+```{r GSE893089}
+## GSE
+naiveDir <- file.path(baseDir, "GSE89309")
+naiveDir2 <- file.path(baseDir, "GSE89308")
+
+mydeg <- readRDS(file.path(naiveDir, "Effector_vs_Naive_CD8_T_cells_GSE89309_DEG.Rds"))
+
+getUDgenes <- function(d='up', prom=FALSE, n=200, genes.out=FALSE, prom.region = 200, max=1E6, p=0.01, lfc=1){
+  if(d=='up') {
+    x <- mydeg[log2FoldChange > lfc  & !is.na(padj) & GENCODE %in% mm10genes$ensemblgene ]
+    x <- head(setkey(x[padj < p], padj), max)
+  }
+  if(d=='down') {
+    x <- mydeg[log2FoldChange < -lfc  & !is.na(padj) & GENCODE %in% mm10genes$ensemblgene ]
+    x <- head(setkey(x[padj < p], padj), max)
+  }
+  x <- mm10genes[mm10genes$ensemblgene %in% x$GENCODE]
+  if(prom) {x <- promoters(x, up=n, down=n)}
+  if(genes.out) return(x) else {
+    x <- GrowRanges(x, both=FALSE, upstream=prom.region)
+    xr <- GRangesList(
+      Type_1 = reduce(GenomicRanges::intersect(x, cHMM[cHMM$type=='Type 1'], ignore.strand=TRUE)),
+      Type_2 = reduce(GenomicRanges::intersect(x, cHMM[cHMM$type=='Type 2'], ignore.strand=TRUE)),
+      Type_3 = reduce(GenomicRanges::intersect(x, cHMM[cHMM$type=='Type 3'], ignore.strand=TRUE)))
+    return(xr)
+  }
+}
+
+genes.types.up <- getUDgenes('up')
+genes.types.down <- getUDgenes('down')
+prom.types.up <- getUDgenes('up', prom=TRUE, n=200)
+prom.types.down <- getUDgenes('down', prom=TRUE, n=200)
+
+allGenes <- mm10genes[!is.na(mm10genes$ensemblgene)]
+allGenes.p <- promoters(allGenes, up=200, down=200)
+notDiffExpressed <- mydeg[padj >  0.9 & baseMean > 100]$GENCODE
+notDiffExpressed <- mm10genes[mm10genes$ensemblgene %in% notDiffExpressed]
+notDiffExpressed <- GrowRanges(notDiffExpressed, both=F, upstream=200)
+notDiffExpressed.p <- promoters(notDiffExpressed, up=200, down=200)
+
+diffExpressed_top250_up <- getUDgenes("up", max=250, genes.out=TRUE)
+diffExpressed_top250_down <- getUDgenes("down", max=250, genes.out=TRUE)
+diffExpressed_top250_up.p <- promoters(diffExpressed_top250_up, up=200, down=200)
+diffExpressed_top250_down.p <- promoters(diffExpressed_top250_down, up=200, down=200)
+```
+
+
+```{r FigS10A}
+
+addProm <- function(x, upstream=200, both=FALSE, ...){GrowRanges(x, both=both, upstream=upstream, ...)}
+
+DE.table <- rbindlist(list(
+  Up=as.list(fractionalOverlap(gr=addProm(diffExpressed_top250_up), grl=cHMM, splitBy = "type")),
+  Down=as.list(fractionalOverlap(gr=addProm(diffExpressed_top250_down), grl=cHMM, splitBy = "type")),
+  Stable=as.list(fractionalOverlap(gr=addProm(notDiffExpressed), grl=cHMM, splitBy = "type")),
+  All=as.list(fractionalOverlap(gr=addProm(allGenes), grl=cHMM, splitBy = "type"))), idcol = "type", fill=TRUE)
+DE.table <- melt(data.table(type = DE.table$type, prop.table(data.matrix(DE.table[,-"type"]), 1)), id.vars = 1)
+DE.table$type <- factor(DE.table$type, unique(DE.table$type))
+fwrite(DE.table, file.path(atacDir, "Figure_7B_data.csv"))
+
+ggplot(DE.table, aes(x=type, y=value, fill=variable)) + 
+  geom_bar(position="stack", stat="identity",width = 0.9) +
+  scale_fill_manual(values=c("#606060", "blue", "red"), name="ChromHMM Type") +
+  theme_classic() +
+  theme(axis.text=element_text(size=15, colour="black")) +
+  theme(axis.title.y=element_text(lineheight=5, angle=90, vjust=0, size=15, margin=margin(0,10,0,0)))+
+  theme(axis.ticks.length =unit(1, "mm")) +
+  theme(axis.text.x = element_text(hjust=1, vjust=0.5, angle=90, size=15, margin=margin(5,5,10,5,"pt")))+
+  xlab("") + ylab("Fraction") + theme(legend.text = (element_text(size=15)))
+
+ggsave(filename = file.path(atacDir, "Figure_S10A_plot.pdf"), width=4, height=4)
+
+
+
+```
+
+
+```{r}
+## 
+t23 <- reduce(unlist(cHMMl) %>% .[.$type %in% c('Type 2', 'Type 3')])
+top250_23_genes <- subsetByOverlaps(getUDgenes("up", max=252, genes.out=TRUE), t23, ignore.strand=TRUE)
+top250_23_genes.r <- intersect(top250_23_genes, t23, ignore.strand=TRUE)
+
+t3 <- reduce(unlist(cHMMl) %>% .[.$type %in% c('Type 3')])
+top250_3_genes <- subsetByOverlaps(getUDgenes("up", max=502, genes.out=TRUE), t3, ignore.strand=TRUE)
+  top250_3_genes.r <- intersect(top250_3_genes, t3, ignore.strand=TRUE)
+
+t2 <- reduce(unlist(cHMMl) %>% .[.$type %in% c('Type 2')])
+top250_type2_down <- subsetByOverlaps(getUDgenes("down", max=266, genes.out=TRUE), t2, ignore.strand=TRUE)
+top250_type2_down.r <- intersect(top250_type2_down, t2, ignore.strand=TRUE)
+
+mygrl2 <- GRangesList(top250_up_t3=top250_3_genes.r, 
+                      top250_down_t2 = top250_type2_down.r)
+
+
+```
+
+
+
+```{r FigS10_Data, eval=FALSE}
+####
+naive.up <-
+  processBed(
+    file.path(baseDir, 'GSE89308/naive.bed.gz'),
+    grl = mygrl2,
+    idcolname = "Category",
+    type = "within",
+    ref = Mmusculus,
+    range = c(1:20),
+    min.len = 80
+  )
+gc(full = TRUE)
+effector.up <-
+  processBed(
+    file.path(baseDir, 'GSE89308/effector.bed.gz'),
+    grl = mygrl2,
+    idcolname = "Category",
+    type = "within",
+    ref = Mmusculus,
+    range = c(1:20),
+    min.len = 80
+  )
+gc(full = TRUE)
+total.reads.up <- c(naive = attr(naive.up, 'total.reads'),
+                  effector = attr(effector.up, 'total.reads'))
+
+unfiltered.reads.up <- c(naive = attr(naive.up, 'unfiltered.reads'),
+                       effector = attr(effector.up, 'unfiltered.reads'))
+allStates.up <-
+  rbindlist(list(naive = naive.up, effector = effector.up),
+            use.names = TRUE,
+            idcol = "genotype")
+rm(list = c("naive.up", "effector.up"))
+allStates.up$Category <-
+  factor(allStates.up$Category, unique(allStates.up$Category))
+gc(full = TRUE)
+
+
+fwrite(as.list(total.reads.up), file.path(naiveDir2, "Fragment_lengths_by_GE_naive_vs_effector_CD8_counts_top250_type3_up_top250_type2_down.csv"))
+fwrite(as.list(unfiltered.reads.up), file.path(naiveDir2, "Fragment_lengths_by_GE_naive_vs_effector_CD8_unfiltered_counts_top250_type3_up_top250_type2_down.csv"))
+
+
+
+fwrite(allStates.up,
+       file.path(naiveDir2, "Fragment_lengths_by_GE_naive_vs_effector_CD8_top250_type3_up_top250_type2_down.csv.gz"))
+```
+
+
+
+
+
+```{r Fig$AandS10B}
+total.reads.up <- unlist(fread(file.path(naiveDir2, "Fragment_lengths_by_GE_naive_vs_effector_CD8_counts_top250_type3_up_top250_type2_down.csv")))
+allStates.up <- fread(file.path(naiveDir2, "Fragment_lengths_by_GE_naive_vs_effector_CD8_top250_type3_up_top250_type2_down.csv.gz"))
+allStates.up$genotype <- factor(allStates.up$genotype, unique(allStates.up$genotype))
+allStates.up$Category <- factor(allStates.up$Category, unique(allStates.up$Category))
+allStates.up.summary2 <- get.state.summary(mygroup = 'Category', total.reads=total.reads.up, grl = mygrl2, dt = allStates.up)
+plot(plotStates(allStates.up.summary2, state='Category', xlim=c(0, 1010), ylim=c(.1, 5e2), text.size=15, strip.text.size=10, facet_col=3, mypal=c("#585858", "#32902f")))
+```
+
+
+
+
+```{r, eval=FALSE}
+pdf(file.path(naiveDir2, "Read_distribution_plot_naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_NRL.pdf"),
+    width=9, height=4, 
+    title = "Read distribution plot naive vs effector CD8+ T cells in gene bodies of top 250 up/down-regulated genes in Type 3/2")
+
+plot(plotStates(allStates.up.summary2, state='Category', xlim=c(0, 1010), ylim=c(.1, 5e2), text.size=15, strip.text.size=10, facet_col=3, mypal=c("#585858", "#32902f")))
+
+dev.off()
+
+
+
+allG.up <- split(allStates.up, allStates.up$Category)
+
+nrls.up <- lapply(seq_along(allG.up), function(x) huntplot(allG.up[[x]], do.plot=FALSE,
+                                                           sample.fraction =  (min(total.reads.up)/total.reads.up),
+                                                           file=FALSE, title=names(allG.up)[x]))
+names(nrls.up) <- names(allG.up)
+
+
+pdf(file.path(naiveDir2, "Read_distribution_plot_naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt.pdf"),
+    width=8.5, height=6, 
+    title = "Read distribution plot naive vs effector CD8+ T cells in gene bodies of top 250 downregulated genes in Type 2")
+lapply(seq_along(allG.up), function(x) huntplot(allG.up[[x]], do.plot=TRUE,
+                                                sample.fraction =  (min(total.reads.up)/total.reads.up),
+                                                file=FALSE, title=names(allG.up)[x]))
+dev.off()
+
+cat('', file = file.path(naiveDir2, 'Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.txt'), append = FALSE)
+cat('\nCombined samples:\n',
+    file = file.path(naiveDir2, 'Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.txt'), 
+    append =TRUE)
+for(j in seq_along(allG.up)){
+  for (i in seq_along(names(nrls.up[[j]]))){
+    cat(paste0(
+      names(allG.up)[[j]],': ', 
+      names(nrls.up[[j]])[i], ' ', 
+      ': maxes: ', paste((nrls.up[[j]][[i]]$maxes)[-1], collapse=', '), 
+      '; mins: ', paste((nrls.up[[j]][[i]]$mins), collapse=', '), '; auc: ', nrls.up[[j]][[i]]$auc, '\n'
+    ),
+    file = file.path(naiveDir2, 'Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.txt'), 
+    append =TRUE)
+  }
+  cat('\n',
+      file = file.path(naiveDir2, 'Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.txt'), 
+      append =TRUE)
+}
+
+system(paste0("enscript -B --margins=10:10: -o ", file.path(naiveDir2, "Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.ps"), " -f Courier@7.3/10 ",file.path(naiveDir2, "Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.txt")))
+system(paste0("ps2pdfwr ", file.path(naiveDir2, "Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.ps"), " ", file.path(naiveDir2, "Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.pdf")))
+file.remove( file.path(naiveDir2, "Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.ps"))
+file.remove( file.path(naiveDir2, "Read_distribution_plot__naive_vs_effector_GE_genes_top250_type3_up_top250_type2_down_hunt_metrics.txt"))
+
+```
+
+
+```{r}
+# From GSE111902 comes H3K27me3 ChIP-seq data
+
+K27me3_ <- GRangesList(
+  naive1 = rtracklayer::import(file.path(baseDir, "GSE111902/N_H3K27me3_Goldrath_1.bw")),
+  naive2 = rtracklayer::import(file.path(baseDir, "GSE111902/N_H3K27me3_Goldrath_2.bw")),
+  effector1 = rtracklayer::import(file.path(baseDir, "GSE111902/TE_H3K27me3_Goldrath_1.bw")),
+  effector2 = rtracklayer::import(file.path(baseDir, "GSE111902/TE_H3K27me3_Goldrath_2.bw"))
+)
+names(K27me3_) <- paste0("H3K27me3_", names(K27me3_))
+```
+
+
+
+
+```{r}
+diffExpressed_top250_up_t3_ranges <- sort(matchSeqlevels(promoters(top250_3_genes, up=4800, down = 30200)), ignore.strand=TRUE)
+```
+
+
+```{r}
+getAvg <- function(x1, x2){
+  rowMeans(cbind(as(x1, "vector"), as(x2, "vector")), na.rm=TRUE)
+}
+
+getChrAvg <- function(chr = "chr1", c1, c2){
+  t(sapply(seq_along(c1[[chr]]), function(x) getAvg(c1[[chr]][[x]], c2[[chr]][[x]])))}
+
+```
+
+
+```{r}
+
+plotGRMeth <- function(gr=diffExpressed_top500_up_ranges, grl=K27me3_){
+  li1 <- lapply(grl, function(x) Views(coverage(matchSeqlevels(x), weight = "score"), gr))
+  for (i in seq_along(li1)){stopifnot(identical(seqlevels(gr), names(li1[[i]])))}
+  for (i in seq_along(li1)){
+    li1[[i]] <- li1[[i]][sapply(li1[[i]], length) > 0]
+    stopifnot(identical(unname(sapply(li1[[i]], length)), seqnames(gr)@lengths))
+  }
+  li2a <- parallel::mclapply(names(li1[[1]]) , function(u) getChrAvg(chr=u, c1=li1[[1]], c2=li1[[2]]), mc.cores=6)
+  li2a <- do.call( "rbind", li2a)
+  li2a[as.character(strand(gr))=="-",] <- li2a[as.character(strand(gr))=="-", ncol(li2a):1]
+  li2b <- parallel::mclapply(names(li1[[3]]) , function(u) getChrAvg(chr=u, c1=li1[[3]], c2=li1[[4]]), mc.cores=6)
+  li2b <- do.call( "rbind", li2b)
+  li2b[as.character(strand(gr))=="-",] <- li2b[as.character(strand(gr))=="-", ncol(li2b):1]
+  
+  cbs <- CutBySize(ncol(li2a), nb = ncol(li2a)/500)
+  cbs <- lapply(seq_len(nrow(cbs)), function(i) cbs[i, 1:2])
+  li2a2 <- sapply(cbs, function(x) rowMeans(li2a[, x[["lower"]]:x[["upper"]]]))
+  li2b2 <- sapply(cbs, function(x) rowMeans(li2b[, x[["lower"]]:x[["upper"]]]))
+  K27M <- rbindlist(list(naive= reshape2::melt(li2a2), effector=reshape2::melt(li2b2)), idcol = "Genotype")
+  K27Mm <- K27M[, mean(value, trim=0.05), by=c("Genotype", "Var2")]
+    K27Mm$Var2 <- rep(seq(-4750, 29750, by=500), 2)/1000
+  K27Mm$Genotype <- relevel(factor(K27Mm$Genotype), "naive")
+  K27Mm
+}
+```
+
+```{r}
+K27Mm <- plotGRMeth(gr=diffExpressed_top250_up_t3_ranges, grl= K27me3_)
+```
+
+```{r FigS10C, fig.width=12}
+
+
+ggplot(K27Mm, aes(x=Var2, y=V1, by=Genotype, colour=Genotype)) +
+  geom_point() + 
+  scale_x_continuous(limits = c(-5, 30), expand = c(0, 0)) +
+  theme_classic() +
+  theme(
+    axis.text = element_text(size = 15, colour = "black"),
+    axis.ticks.length = unit(1, "mm"),
+    axis.title.y = element_text(
+      lineheight = 5,
+      angle = 90,
+      vjust = 0,
+      size = 15,
+      margin = margin(0, 10, 0, 0)),
+    axis.text.x = element_text(
+      size = 15,
+      margin = margin(5, 5, 10, 5, "pt"),
+      angle = 90,
+      vjust=0.5
+    ),
+    axis.text.y = element_text(size = 15, margin = margin(5, 5, 10, 5, "pt")),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    strip.text = element_text(size = 15),
+    legend.position = "bottom") +
+  xlab("Distance from TSS [kb]") +
+  ylab(expression("Average H3K27me3 signal")) +
+  scale_colour_manual(values = c("#585858", "#32902f")) +
+  geom_smooth(method = "loess", span = 0.1, se = FALSE) 
+
+
+
+```
+
+
+

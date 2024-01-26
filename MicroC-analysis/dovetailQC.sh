@@ -29,20 +29,25 @@ bam=$sample-mapped.PT.bam
 qc=$sample-QC.txt
 pseq=$sample-preseq.txt
 
-## run two-sided alignment, duplication removal, make pairs file, bam, and stats file
-bwa mem -5SP -T0 -t$cores $fasta $read1 $read2 | pairtools parse --min-mapq 40 --walks-policy 5unique --max-inter-align-gap 30 --nproc-in $cores --nproc-out $cores --chroms-path genome.temp | pairtools sort --tmpdir=temp --nproc $cores | pairtools dedup --nproc-in $cores --nproc-out $cores --mark-dups --output-stats $stats | pairtools split --nproc-in $cores --nproc-out $cores --output-pairs $pairs --output-sam -|samtools view -bS -@$cores | samtools sort -@$cores -o $bam
+## run two-sided alignment, duplication removal, make pairs file, bam, and stats file. separate steps to be able to pick up mid-way if it fails
+bwa mem -5SP -T0 -t$cores $fasta $read1 $read2 -o $sample-aligned.sam
+pairtools parse --min-mapq 40 --walks-policy 5unique --max-inter-align-gap 30 --nproc-in $cores --nproc-out $cores --chroms-path genome.temp $sample-aligned.sam > $sample-parsed.pairsam
+pairtools sort --tmpdir=temp --nproc $cores $sample-parsed.pairsam > $sample-sorted.pairsam
+pairtools dedup --nproc-in $cores --nproc-out $cores --mark-dups --output-stats $stats --output $sample-dedup.pairsam $sample-sorted.pairsam
+pairtools split --nproc-in $cores --nproc-out $cores --output-pairs $pairs --output-sam $sample-unsorted.bam $sample-dedup.pairsam
+samtools sort -@$cores -o $bam $sample-unsorted.bam
 samtools index $bam
 
 ## run python QC script to simplify stats file
 python /rugpfs/fs0/risc_lab/scratch/iduba/linker-histone/Micro-C/get_qc_edit.py -p $stats > $qc 
-
-## run preseq to see expected unique reads at various sequencing depths
-preseq lc_extrap -bam -pe -extrap 2.1e9 -step 1e8 -seg_len 1000000000 -output $pseq $bam 
 
 ## housekeeping 
 #rm genome.temp
 # rm -r temp
 mkdir -p $sample
 mv $sample-* $sample
+mkdir $sample/intermediates
+mv $sample-aligned.sam $sample-parsed.pairsam $sample-sorted.pairsam $sample-dedup.pairsam $sample-unsorted.bam $sample/intermediates
+
 
 cd ..

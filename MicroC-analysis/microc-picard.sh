@@ -6,7 +6,7 @@ echo Test permission
 
 ## run this if preseq in the dovetail pipeline doesn't converge. this is the dovetail pip    eline without duplicate removal so picard can run to estimate library complexity.
 
-source activate "microc"
+#source activate "microc"
 
 dir=$1 #path to directory with fastqs
 sample=$2 #name of fastq up to _R#... (eg K562_low_S72 from K562_low_S72_R1_001.fastq.gz)
@@ -22,19 +22,21 @@ read2=$sample\_R2_001.fastq.gz
 cut -f1,2 $fasta\.fai > genome.temp
 
 ## make output file names
-pairs=$sample-wdups-mapped.pairs
-bam=$sample-wdups-mapped.PT.bam
+dupbam=$sample-wdups-mapped.bam
+stdupbam=$sample-wdups-mapped-st.bam
+bam=$sample-mapped.bam
+stbam=$sample-mapped-st.bam
 picard=$sample-picard.txt
 
 ## run two-sided alignment, duplication removal, make pairs file, bam, and stats file
-bwa mem -5SP -T0 -t$cores $fasta $read1 $read2 | pairtools parse --min-mapq 40 --walks-policy 5unique --max-inter-align-gap 30 --nproc-in $cores --nproc-out $cores --chroms-path genome.temp | pairtools sort --tmpdir=temp --nproc $cores | pairtools split --nproc-in $cores --nproc-out $cores --output-pairs $pairs --output-sam -|samtools view -bS -@$cores | samtools sort -@$cores -o $bam
-samtools index $bam
-
-## run picard to estimate library complexity
-picard EstimateLibraryComplexity I=$bam O=$picard
+#bwa mem -5SP -T0 -t$cores $fasta $read1 $read2 -o $dupbam
+#samtools sort -@$cores -o $stdupbam $dupbam
+#picard MarkDuplicates --REMOVE_DUPLICATES true -I $stdupbam -O $bam -M $picard
+samtools sort -@$cores -o $stbam $bam
+samtools index $stbam
 
 ## housekeeping 
 mkdir -p $sample
-#mv $sample-* $sample
+mv $sample-* $sample
 
 cd ..

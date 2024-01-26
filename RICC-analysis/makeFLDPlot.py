@@ -83,11 +83,11 @@ def sub_Mat(start):
                 continue
             # get read positions
             if p2_rds.is_reverse:
-		continue
+                continue
             else:
-		l_pos = p2_rds.pos
-		ilen = abs(p2_rds.tlen)
-		r_pos=l_pos+ilen-1
+                l_pos = p2_rds.pos
+                ilen = abs(p2_rds.tlen)
+                r_pos=l_pos+ilen-1
                 mat = asn_mat(l_pos,r_pos,mat,s_int,e_int,ilen,i,start,1)
     return mat
 
@@ -106,7 +106,7 @@ cols = int(options.l)
 maxi=len(p1_ints)
 chunksize=maxi/int(options.c)
 # chunks=maxi/chunksize # not actually used
-starts=range(0,maxi,chunksize)
+starts=range(0,maxi,int(chunksize))
 rows = maxi
 # print('rows: '+str(rows)) # debug
 

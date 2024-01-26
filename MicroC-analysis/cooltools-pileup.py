@@ -4,6 +4,14 @@ import cooler
 import cooltools
 import bioframe
 import cooltools.lib.plotting
+from optparse import OptionParser
+
+opts = OptionParser()
+opts.add_option('-m', help = '<.mcool> path to mcool file')
+opts.add_option('-r', help = '<resoltion> resolution of mcool to use for p
+lotting contact map')
+options, arguments = opts.parse_args()
+
 
 sample = 'K562_WT_50_test'
 resolution = 50

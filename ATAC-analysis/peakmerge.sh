@@ -7,8 +7,9 @@ for filename in */peakCalls/*.narrowPeak; do
 	mv $bedfile bed3s
 done
 cd bed3s
-cat *peaks.bed > masterpeaklist.bed
-bedtools merge -i $bedfile -c 1 -o count > mergedpeaks.bed
+cat *.bed > masterpeaklist.bed
+bedtools sort -i masterpeaklist.bed > masterpeaklist.st.bed
+bedtools merge -i masterpeaklist.st.bed -c 1 -o count > mergedpeaks.bed
 wc -l *_peaks.bed
 wc -l masterpeaklist.bed
 wc -l mergedpeaks.bed

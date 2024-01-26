@@ -7,6 +7,24 @@ import cooltools.lib.plotting
 from matplotlib.ticker import EngFormatter
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from optparse import OptionParser
+
+opts = OptionParser()
+opts.add_option('-m', help = '<.mcool> path to mcool file')
+opts.add_option('--r1', help = '<resolution 1> resolution in bp of mcool to use for plotting full contact map (100kb or larger)')
+opts.add_option('--r2', help = '<resolution 2> resolution in bp of mcool to use for plotting zoomed contact map')
+options, arguments = opts.parse_args()
+
+chrom = 'chr17'
+start = 30_000_000
+end = 32_000_000
+region = (chrom, start, end)
+
+mc_file = options.m
+res1 = options.r1
+kbres1 = int(int(res1)/1000)
+res2 = options.r2
+kbres2 = int(int(res2)/1000)
 
 bp_formatter = EngFormatter('b')
 def format_ticks(ax, x=True, y=True, rotate=True):
@@ -18,12 +36,12 @@ def format_ticks(ax, x=True, y=True, rotate=True):
     if rotate:
         ax.tick_params(axis='x',rotation=45)
 
-clr = cooler.Cooler('K562-WT_1000.mcool::/resolutions/1000000')
-clr_10kb = cooler.Cooler('K562-WT_1000.mcool::/resolutions/10000')
+clr1 = cooler.Cooler(f'{mc_file}::/resolutions/{res1}')
+clr2 = cooler.Cooler(f'{mc_file}::/resolutions/{res2}')
 
 chromstarts = []
-for i in clr.chromnames:
-    chromstarts.append(clr.extent(i)[0])
+for i in clr1.chromnames:
+    chromstarts.append(clr1.extent(i)[0])
 plt_width=4
 f, axs = plt.subplots(
     figsize=( plt_width+plt_width+2, plt_width+plt_width+1),
@@ -33,18 +51,18 @@ f, axs = plt.subplots(
     constrained_layout=True
 )
 
-norm = LogNorm(vmax=0.1)
-norm_raw = LogNorm(vmin=1, vmax=10_000)
+norm = LogNorm(vmax=0.001)
+norm_raw = LogNorm(vmin=1, vmax=100)
 
 ax = axs[0,0]
 im = ax.matshow(
-    clr.matrix(balance=False)[:],
+    clr1.matrix(balance=False)[:],
     norm=norm_raw,
     cmap='fall',
     aspect='auto'
 );
 ax.xaxis.set_visible(False)
-ax.set_title('full matrix, 1 Mb resolution')
+ax.set_title(f'full matrix, {kbres1}kb resolution')
 ax.set_ylabel('raw', fontsize=16)
 
 cax = axs[0,1]
@@ -52,7 +70,7 @@ plt.colorbar(im, cax=cax, label='raw counts')
 
 ax = axs[1,0]
 im = ax.matshow(
-    clr.matrix()[:],
+    clr1.matrix(balance=True)[:],
     norm=norm,
     cmap='fall',
 );
@@ -63,26 +81,21 @@ cax = axs[1,1]
 plt.colorbar(im, cax=cax, label='corrected freqs')
 
 ax1 = axs[2,0]
-weights = clr.bins()[:]['weight'].values
+weights = clr1.bins()[:]['weight'].values
 ax1.plot(weights)
-ax1.set_xlim([0, len(clr.bins()[:])])
+ax1.set_xlim([0, len(clr1.bins()[:])])
 ax1.set_xlabel('position, bins')
 
 ax1 = axs[2,1]
 ax1.set_visible(False)
 
-
-start = 30_000_000
-end = 32_000_000
-region = ('chr17', start, end)
-
 ax = axs[0,2]
 im = ax.matshow(
-        clr_10kb.matrix(balance=False).fetch(region),
+        clr2.matrix(balance=False).fetch(region),
     norm=LogNorm(vmin=1,vmax=100),
     cmap='fall'
 );
-ax.set_title('chr17: 30 Mb - 32 Mb, 10 kb resolution')
+ax.set_title(f'{chrom}: {int(int(start)/1000)} kb - {int(int(end)/1000)} kb, {kbres2} kb resolution')
 ax.xaxis.set_visible(False)
 
 cax = axs[0,3]
@@ -90,7 +103,7 @@ plt.colorbar(im, cax=cax, label='raw counts');
 
 ax = axs[1,2]
 im = ax.matshow(
-    clr_10kb.matrix().fetch(region),
+    clr2.matrix(balance=True).fetch(region),
     norm=norm,
     cmap='fall',
     extent=(start, end, end, start)
@@ -101,7 +114,7 @@ cax = axs[1,3]
 plt.colorbar(im, cax=cax, label='corrected frequencies');
 
 ax1 = axs[2,2]
-weights = clr_10kb.bins().fetch(region)['weight'].values
+weights = clr2.bins().fetch(region)['weight'].values
 ax1.plot(
     np.linspace(start, end, len(weights)),
     weights
@@ -113,4 +126,4 @@ ax1.set_xlabel('chr17 position, bp')
 ax1 = axs[2,3]
 ax1.set_visible(False)
 
-plt.savefig('K562-WT_100kb_rawmaps.pdf', format='pdf')
+plt.savefig(f'{mc_file}_rawmaps.pdf', format='pdf')

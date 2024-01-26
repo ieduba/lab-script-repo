@@ -1,0 +1,695 @@
+#########################
+## RNA-seq alignment:
+#########################
+BINDIR="/home/b/bin"
+PROJECTDIR="/media/Data/Projects/Art"
+INDIR="$PROJECTDIR/H1_RNAseq/Raw/"
+cd $INDIR
+export PATH=/media/Data/sw/source/bbmap/:$PATH
+REFS="/media/Data/General_References/Genomes/Illumina_adapters.fa"
+GENOMEDIR="/media/Data/General_References/Genomes/mm10"
+
+## prepare genome index
+cd $GENOMEDIR
+GDIR=$GENOMEDIR/STAR.mm10.gencode.vM20
+mkdir -p $GDIR
+STAR --runThreadN 8 --runMode genomeGenerate --genomeDir $GDIR --genomeFastaFiles $GENOMEDIR/Mus_musculus/UCSC/mm10/Sequence/WholeGenomeFasta/genome.fa --sjdbGTFfile /media/Data/General_References/Genomes/mm10/gencode.vM20.annotation.gtf --sjdbOverhang 99 
+
+OUTDIR="$PROJECTDIR/H1_RNAseq/STAR"
+mkdir -p $OUTDIR
+
+cd $INDIR
+l1=($(ls *_R1_001.fastq.gz))
+l2=($(ls *_R2_001.fastq.gz))
+for f in {0..5}
+do
+  fwd=${l1[$f]}
+  rev=${l2[$f]}
+  fwd2=$(echo $fwd | sed 's/_001.fastq.gz//')
+  rev2=$(echo $rev | sed 's/_001.fastq.gz//')
+  trun=$(echo $fwd2 | sed 's/_R1//g')
+  echo "processing F=$fwd2; R=$rev2"
+  bbduk.sh -Xmx10g in1=$fwd in2=$rev out1=$fwd2.f.fastq.gz out2=$rev2.f.fastq.gz minlen=100 qtrim=lr trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1 tbo tpe
+  STAR --runThreadN 8 --genomeDir $GDIR --outSAMtype BAM SortedByCoordinate --bamRemoveDuplicatesType UniqueIdentical --outWigType bedGraph --readFilesIn $fwd2.f.fastq.gz $rev2.f.fastq.gz --readFilesCommand zcat --quantMode TranscriptomeSAM GeneCounts --outFileNamePrefix $OUTDIR/$trun --limitBAMsortRAM 16000000000 --twopassMode Basic --sjdbOverhang 99 --outSAMstrandField intronMotif	
+done
+
+for f in {6..11}
+do
+  fwd=${l1[$f]}
+  rev=${l2[$f]}
+  fwd2=$(echo $fwd | sed 's/_001.fastq.gz//')
+  rev2=$(echo $rev | sed 's/_001.fastq.gz//')
+  trun=$(echo $fwd2 | sed 's/_R1//g')
+  echo "processing F=$fwd2; R=$rev2"
+  bbduk.sh -Xmx10g in1=$fwd in2=$rev out1=$fwd2.f.fastq.gz out2=$rev2.f.fastq.gz minlen=100 qtrim=lr trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1 tbo tpe
+  STAR --runThreadN 14 --genomeDir $GDIR --outSAMtype BAM SortedByCoordinate --bamRemoveDuplicatesType UniqueIdentical --outWigType bedGraph --readFilesIn $fwd2.f.fastq.gz $rev2.f.fastq.gz --readFilesCommand zcat --quantMode TranscriptomeSAM GeneCounts --outFileNamePrefix $OUTDIR/$trun --limitBAMsortRAM 16000000000 --twopassMode Basic --sjdbOverhang 99 --outSAMstrandField intronMotif	
+done
+
+parallel -i -j 8 bash -c 'f="{}"; g="${f%.*}"; bedGraphToBigWig "$f" /media/Data/General_References/Genomes/mm10/STAR.mm10.gencode.vM20/chrNameLength.txt "$g".bw' -- $(find -name '*.bg')
+
+
+
+#########################
+#### ATAC-seq alignment:
+#########################
+export PATH=/media/Data/sw/source/bbmap/:$PATH
+BINDIR="/home/b/bin"
+PROJECTDIR="/media/Data/Projects/Art"
+GENOMEDIR="/media/Data/General_References/Genomes/mm10"
+REFS="/media/Data/sw/source/bbmap/resources/adapters.fa"
+MOUSE="/media/Data/General_References/Genomes/mm10/mm10"
+INDIR="$PROJECTDIR/H1_ATAC/raw/AL1806221-R3/"
+OUTDIR="/media/b/7f143ccd-2d92-4999-958c-3ac32981a476/Michael/cTKO_ATAC"
+cd $INDIR
+
+l1=($(ls *R1_001.fastq.gz | sort))
+l2=($(ls *R2_001.fastq.gz | sort))
+
+for f in {0..15}
+do
+  fwd=${l1[$f]}
+  rev=${l2[$f]}
+  fwd2=$(echo $fwd | sed 's/_001.fastq.gz//')
+  rev2=$(echo $rev | sed 's/_001.fastq.gz//')
+  trun=$(echo $fwd2 | sed -e 's/.\{4\}//' -e 's/_R1$//') 
+  echo "processing F=$fwd2; R=$rev2"
+  echo "$trun.bam: " >> $OUTDIR/bowtie_log.txt
+  bbduk.sh -Xmx10g in1=$fwd in2=$rev out1=$OUTDIR/$fwd2.f.fastq.gz out2=$OUTDIR/$rev2.f.fastq.gz overwrite=f stats=$OUTDIR/$trun.bbduk_stats.txt minlen=50 qtrim=r trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1 hdist2=2 tbo tpe
+  (bowtie2 --reorder --mm --no-mixed --no-discordant --very-sensitive -X 1000 -p16 -x $MOUSE -1 $OUTDIR/$fwd2.f.fastq.gz -2 $OUTDIR/$rev2.f.fastq.gz) 2>> $OUTDIR/bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -F "ref_id!=21" -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $OUTDIR/$trun.bam /dev/stdin
+  $BINDIR/sambamba flagstat -t 10 $OUTDIR/$trun.bam > $OUTDIR/$trun.stats.txt
+  rm $OUTDIR/$fwd2.f.fastq.gz $OUTDIR/$rev2.f.fastq.gz
+done
+
+## for NRL:
+cd $OUTDIR
+samtools merge -O BAM -n - Lane1-1.bam Lane1-2.bam Lane2-1.bam Lane2-2.bam | samtools view -b -F 0x900 -f 0x0002 - > CD4_WT.bam 
+samtools merge -O BAM -n - Lane1-3.bam Lane1-4.bam Lane2-3.bam Lane2-4.bam | samtools view -b -F 0x900 -f 0x0002 - > CD4_cTKO.bam 
+samtools merge -O BAM -n - Lane1-5.bam Lane1-6.bam | samtools view -b -F 0x900 -f 0x0002 - > B_WT.bam 
+samtools merge -O BAM -n - Lane1-7.bam Lane1-8.bam | samtools view -b -F 0x900 -f 0x0002 - > B_cTKO.bam 
+samtools merge -O BAM -n - Lane2-5.bam Lane2-6.bam | samtools view -b -F 0x900 -f 0x0002 - > CD8_WT.bam 
+samtools merge -O BAM -n - Lane2-7.bam Lane2-8.bam | samtools view -b -F 0x900 -f 0x0002 - > CD8_cTKO.bam
+
+## generate bed file with shifted fragments:
+for f in CD4_WT.bam CD4_cTKO.bam B_WT.bam B_cTKO.bam CD8_WT.bam CD8_cTKO.bam
+do 
+  python3 ~/bin/ExtractBamPELengths.py -i $f -a=True | sort -k1,1 -k2,2n -k3,3n | pigz -f > $(basename $f .bam).bed.gz
+done
+
+
+
+#########################
+#### ATAC-seq alignment GSE89308:
+#########################
+MOUSE="/media/Data/General_References/Genomes/mm10/mm10"
+INDIR="/media/b/7f143ccd-2d92-4999-958c-3ac32981a476/Michael/GSE89308/"
+export PATH=/media/Data/sw/source/bbmap/:$PATH
+REFS="/media/Data/sw/source/bbmap/resources/adapters.fa"
+cd $INDIR
+l1=($(ls *_1.fastq.gz | sort))
+l2=($(ls *_2.fastq.gz | sort))
+
+for f in {0..5}
+do
+  fwd=${l1[$f]}
+  rev=${l2[$f]}
+  fwd2=$(echo $fwd | sed 's/.fastq.gz//')
+  rev2=$(echo $rev | sed 's/.fastq.gz//')
+  trun=$(echo $fwd2 | sed 's/_.*//') 
+  echo "processing F=$fwd2; R=$rev2"
+  bbduk.sh -Xmx10g in1=$fwd in2=$rev out1=$fwd2.f.fastq.gz out2=$rev2.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=30 qtrim=r trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1 tbo tpe
+  (bowtie2 --reorder --mm --no-mixed --no-discordant --very-sensitive -X 1000 -p16 -x $MOUSE -1 $fwd2.f.fastq.gz -2 $rev2.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  ~/bin/sambamba view -F "ref_id!=21" -f bam -S -l 1 -o /dev/stdout /dev/stdin | ~/bin/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+  ~/bin/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt
+  rm $fwd2.f.fastq.gz $rev2.f.fastq.gz
+  samtools view -b -F 0x900 -f 0x0002 $trun.bam > $trun.u.bam
+done
+
+BAM_DIR=$INDIR/naive
+find $BAM_DIR -name '*.u.bam' |
+  ~/bin/parallel --tmpdir /media/b/7f143ccd-2d92-4999-958c-3ac32981a476/TEMP -j4 -N4095 -m --files samtools merge -u - |
+  ~/bin/parallel --tmpdir /media/b/7f143ccd-2d92-4999-958c-3ac32981a476/TEMP --xargs samtools merge -@4 naive.merged.bam {}";" rm {}
+~/bin/sambamba sort -n -t 10 -m 40G --tmpdir=/media/b/7f143ccd-2d92-4999-958c-3ac32981a476/TEMP -o naive_merged.s.bam naive.merged.bam 
+
+BAM_DIR=$INDIR/effector
+find $BAM_DIR -name '*.u.bam' |
+  ~/bin/parallel --tmpdir /media/b/7f143ccd-2d92-4999-958c-3ac32981a476/TEMP -j4 -N4095 -m --files samtools merge -u - |
+  ~/bin/parallel --tmpdir /media/b/7f143ccd-2d92-4999-958c-3ac32981a476/TEMP --xargs samtools merge -@4 effector.merged.bam {}";" rm {}
+~/bin/sambamba sort -n -t 10 -m 40G --tmpdir=/media/b/7f143ccd-2d92-4999-958c-3ac32981a476/TEMP -o effector_merged.s.bam effector.merged.bam
+samtools view -b -F 0x900 -f 0x0002 naive_merged.s.bam > $INDIR/naive.bam 
+samtools view -b -F 0x900 -f 0x0002 effector_merged.s.bam  > $INDIR/effector.bam
+
+## for NRL:
+for f in naive.bam effector.bam
+do 
+  python3 ~/bin/ExtractBamPELengths.py -i $f -a=True | sort -k1,1 -k2,2n -k3,3n | pigz -f > $(basename $f .bam).bed.gz
+done
+
+
+
+
+
+#########################
+### bowtie2 alignment of H3K27me3 and H3K36me2 of cTKO and WT CD8 T cells to mm10:
+#########################
+
+REFS="/media/Data/General_References/Genomes/Illumina_adapters.fa"
+export PATH=/media/Data/sw/source/bbmap/:$PATH
+BASEDIR="/media/BBCKP1/Michael"
+BASEDIR2="$BASEDIR/30_158735468"
+BASEDIR3="$BASEDIR/chromHMM"
+GENOMEDIR="/media/BBCKP3/mm10/Mus_musculus/UCSC/mm10/Sequence/Bowtie2Index"
+
+l1=($(ls *_R1_001.fastq.gz))
+l2=($(ls *_R2_001.fastq.gz))
+for f in {0..11}
+do
+        fwd=${l1[$f]}
+        rev=${l2[$f]}
+        fwd2=$(echo $fwd | sed 's/_001.fastq.gz//')
+        rev2=$(echo $rev | sed 's/_001.fastq.gz//')
+        trun=$(echo $fwd2 | sed 's/_R1//') 
+	echo "processing F=$fwd2; R=$rev2"
+	bowtie2 -q -p 10 -x $GENOMEDIR/genome -1 $fwd2.f.fastq.gz -2 $rev2.f.fastq.gz | $BINDIR/bin/samtools view -bS /dev/stdin | $BINDIR/bin/samtools sort -m 10G -@8 - > $BASEDIR2/${trun}.mm10.bam
+        $BINDIR/bin/samtools index $BASEDIR2/${trun}.mm10.bam $BASEDIR2/${trun}.mm10.bai
+	java -jar -Xmx20G $BINDIR/picard.jar MarkDuplicates I=${trun}.mm10.bam O=${trun}.mm10.rmd.bam REMOVE_DUPLICATES=TRUE M=${trun}.mm10.md_metrics.txt
+        $BINDIR/bin/samtools index ${trun}.mm10.rmd.bam ${trun}.mm10.rmd.bai
+        $BINDIR/bin/samtools flagstat ${trun}.mm10.rmd.bam > ${trun}.mm10.rmd.stats.txt	
+done
+
+
+
+
+#########################
+#### import and combine external NGS files:
+#########################
+
+# external: H3K4me1, H3K4me3, H3K9me3, H3K36me3, PolIII Ser2P, CTCF
+# (combine with in-house H3K36me2, and H3K27me3 ChIP-seq, plus ATAC-seq and RNA-seq alignments for chromHMM)
+
+MOUSE="/media/Data/General_References/Genomes/mm10/mm10"
+INDIR="$BASEDIR3"
+
+
+## GSM1441298_H3K4me1CD8 : SRX658403 (26,407,811 60bp SE reads, no input ctrl)
+mkdir -p $BASEDIR3/H3K4me1
+cd $BASEDIR3/H3K4me1
+fastq-dump --split-3 SRR1521860
+fastq-dump --split-3 SRR1521861
+cat SRR1521860.fastq SRR1521861.fastq | pigz > GSM1441298_H3K4me1CD8.fastq.gz
+rm SRR1521860.fastq SRR1521861.fastq
+fastqc *.fastq.gz
+
+
+## GSM1441330_H3K4me3CD8 : SRX658435 (21,738,120 60bp SE reads; no input ctrl)
+mkdir -p $BASEDIR3/H3K4me3
+cd $BASEDIR3/H3K4me3
+fastq-dump --split-3 SRR1521939
+fastq-dump --split-3 SRR1521940
+cat SRR1521939.fastq SRR1521940.fastq | pigz > GSM1441330_H3K4me3CD8.fastq.gz
+rm SRR1521939.fastq SRR1521940.fastq
+fastqc *.fastq.gz
+
+
+## GSM758730_H3K36me3: CD8 SRR309229 (12,401,647 SE 34bp reads)
+mkdir -p $BASEDIR3/H3K36me3
+cd $BASEDIR3/H3K36me3
+fastq-dump --split-3 SRR309229
+pigz *.fastq
+fastqc *.fastq.gz
+
+
+## GSE106267_H3K9me3 : SRX3337485 (PE, 150bp); control: SRX3337486 (PE)
+mkdir -p $BASEDIR3/H3K9me3
+cd $BASEDIR3/H3K9me3
+fastq-dump --split-3 SRR6228881
+fastq-dump --split-3 SRR6228882 ## input control
+pigz *.fastq
+fastqc *.fastq.gz
+
+
+## Pol2_S2_GSM1400432: GSM726991 SRX554974 (34,162,861 SE 50bp reads)
+mkdir -p $BASEDIR3/Pol2
+cd $BASEDIR3/Pol2
+fastq-dump --split-3 SRR1302116
+pigz *.fastq
+fastqc *.fastq.gz
+
+
+## GSM1023418_CTCF (DP T cells) (7,349,830 40bp SE reads)
+mkdir -p $BASEDIR3/CTCF
+cd $BASEDIR3/CTCF
+fastq-dump --split-3 SRR605075
+pigz *.fastq
+fastqc SRR605075.fastq.gz
+
+
+
+### files to align:
+H3K4me1/GSM1441298_H3K4me1CD8.fastq.gz
+H3K4me3/GSM1441330_H3K4me3CD8.fastq.gz
+H3K9me3/SRR6228881_1.fastq.gz SRR6228881_2.fastq.gz (control: H3K9me3/SRR6228882_1.fastq.gz H3K9me3/SRR6228882_2.fastq.gz)
+H3K36me3/SRR309229.fastq.gz
+Pol2/SRR1302116.fastq.gz
+CTCF/SRR605075.fastq.gz
+
+
+
+#########################
+### align external fastq files:
+#########################
+MOUSE="/media/BBCKP3/mm10/Mus_musculus/mm10/mm10"
+INDIR="$BASEDIR3"
+
+cd $INDIR
+export PATH=/media/Data/sw/source/bbmap/:$PATH
+REFS="/media/Data/General_References/Genomes/Illumina_adapters.fa"
+
+f="H3K4me1/GSM1441298_H3K4me1CD8.fastq.gz"
+trun=$(echo $f | sed 's/.fastq.gz//')
+echo "processing F=$f ..."
+bbduk.sh -Xmx10g in=$f out=$trun.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1
+  (bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -U $trun.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+  $BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt
+
+  
+f="H3K4me3/GSM1441330_H3K4me3CD8.fastq.gz"
+trun=$(echo $f | sed 's/.fastq.gz//')
+echo "processing F=$f ..."
+bbduk.sh -Xmx10g in=$f out=$trun.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1
+(bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -U $trun.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+$BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt  
+  
+
+f="H3K36me3/SRR309229.fastq.gz"
+trun=$(echo $f | sed 's/.fastq.gz//')
+echo "processing F=$f ..."
+bbduk.sh -Xmx10g in=$f out=$trun.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1
+(bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -U $trun.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+$BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt  
+
+
+f="Pol2/SRR1302116.fastq.gz"
+trun=$(echo $f | sed 's/.fastq.gz//')
+echo "processing F=$f ..."
+bbduk.sh -Xmx10g in=$f out=$trun.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1
+(bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -U $trun.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+$BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt  
+
+
+f="CTCF/SRR605075.fastq.gz"
+trun=$(echo $f | sed 's/.fastq.gz//')
+echo "processing F=$f ..."
+bbduk.sh -Xmx10g in=$f out=$trun.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1
+(bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -U $trun.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+$BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt  
+
+
+f="H3K27me3/H3K27me3.fastq.gz"
+trun=$(echo $f | sed 's/.fastq.gz//')
+echo "processing F=$f ..."
+bbduk.sh -Xmx10g in=$f out=$trun.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1
+(bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -U $trun.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+$BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt  
+
+f="H3K27me3_input.fastq.gz"
+trun=$(echo $f | sed 's/.fastq.gz//')
+echo "processing F=$f ..."
+bbduk.sh -Xmx10g in=$f out=$trun.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1
+(bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -U $trun.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+$BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt  
+
+
+fwd="H3K9me3/SRR6228881_1.fastq.gz"
+rev="H3K9me3/SRR6228881_2.fastq.gz"
+fwd2=$(echo $fwd | sed 's/.fastq.gz//')
+rev2=$(echo $rev | sed 's/.fastq.gz//')
+trun=$(echo $fwd | sed 's/_1.fastq.gz//') 
+echo "processing F=$fwd2; R=$rev2"
+bbduk.sh -Xmx10g in1=$fwd in2=$rev out1=$fwd2.f.fastq.gz out2=$rev2.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1 tbo tpe
+(bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -1 $fwd2.f.fastq.gz -2 $rev2.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+$BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt
+
+fwd="H3K9me3/SRR6228882_1.fastq.gz"
+rev="H3K9me3/SRR6228882_2.fastq.gz"
+fwd2=$(echo $fwd | sed 's/.fastq.gz//')
+rev2=$(echo $rev | sed 's/.fastq.gz//')
+trun=$(echo $fwd | sed 's/_1.fastq.gz//') 
+echo "processing F=$fwd2; R=$rev2"
+bbduk.sh -Xmx10g in1=$fwd in2=$rev out1=$fwd2.f.fastq.gz out2=$rev2.f.fastq.gz overwrite=f stats=$trun.bbduk_stats.txt minlen=25 qtrim=rl trimq=6 ktrim=r k=25 mink=11 ref=$REFS hdist=1 tbo tpe
+(bowtie2 --reorder --mm -k 20 -p 12 -x $MOUSE -1 $fwd2.f.fastq.gz -2 $rev2.f.fastq.gz) 2>> bowtie_log.txt  | samblaster --removeDups |  $BINDIR/sambamba view -f bam -S -l 1 -o /dev/stdout /dev/stdin | $BINDIR/sambamba sort -n -t 10 -m 40G --tmpdir=./ -o $trun.bam /dev/stdin
+$BINDIR/sambamba flagstat -t 10 $trun.bam > $trun.stats.txt
+
+
+
+#########################
+### sort and index bam files
+#########################
+
+cd $INDIR
+export PATH=/media/Data/sw/source/bbmap/:$PATH
+REFS="/media/Data/General_References/Genomes/Illumina_adapters.fa"
+
+INDIR="$BASEDIR3/H3K4me1"
+mv $INDIR/GSM1441298_H3K4me1CD8.bam $INDIR/GSM1441298_H3K4me1CD8_.bam
+samtools sort $INDIR/GSM1441298_H3K4me1CD8_.bam -o $INDIR/GSM1441298_H3K4me1CD8.bam
+samtools index $INDIR/GSM1441298_H3K4me1CD8.bam $INDIR/GSM1441298_H3K4me1CD8.bam.bai
+
+INDIR="$BASEDIR3/H3K4me3"
+mv $INDIR/GSM1441330_H3K4me3CD8.bam $INDIR/GSM1441330_H3K4me3CD8_.bam
+samtools sort $INDIR/GSM1441330_H3K4me3CD8_.bam -o $INDIR/GSM1441330_H3K4me3CD8.bam
+samtools index $INDIR/GSM1441330_H3K4me3CD8.bam $INDIR/GSM1441330_H3K4me3CD8.bam.bai
+
+INDIR="$BASEDIR3/H3K27me3"
+mv $INDIR/H3K27me3.bam $INDIR/H3K27me3_.bam
+samtools sort $INDIR/H3K27me3_.bam -o $INDIR/H3K27me3.bam
+samtools index $INDIR/H3K27me3.bam $INDIR/H3K27me3.bam.bai
+
+INDIR="$BASEDIR3/CTCF"
+mv $INDIR/SRR605075.bam $INDIR/SRR605075_.bam
+samtools sort $INDIR/SRR605075_.bam -o $INDIR/SRR605075.bam
+samtools index $INDIR/SRR605075.bam $INDIR/SRR605075.bam.bai
+
+INDIR="$BASEDIR3/Pol2"
+mv $INDIR/SRR1302116.bam $INDIR/SRR1302116_.bam
+samtools sort $INDIR/SRR1302116_.bam -o $INDIR/SRR1302116.bam
+samtools index $INDIR/SRR1302116.bam $INDIR/SRR1302116.bam.bai
+
+INDIR="$BASEDIR3/H3K36me3"
+mv $INDIR/SRR309229.bam $INDIR/SRR309229_.bam
+samtools sort $INDIR/SRR309229_.bam -o $INDIR/SRR309229.bam
+samtools index $INDIR/SRR309229.bam $INDIR/SRR309229.bam.bai
+
+
+
+#########################
+### filter and reorder bam files for chromHMM:
+#########################
+MOUSESEQ=$(echo $MOUSE | sed 's/\/Mus_musculus\/mm10\/mm10//')
+cd $BASEDIR3/bam
+for f in SRR309229.bam SRR1302116.bam SRR605075.bam GSM1441330_H3K4me3CD8.bam GSM1441298_H3K4me1CD8.bam SRR6228881.bam
+do
+  samtools index $f
+  samtools view -H $f | awk '$2 !~ /SN:.*_/' > $(basename $f .bam).f.sam
+  samtools view $f -S -q 5 -F 260 chr1 chr2 chr3 chr4 chr5 chr6 chr7 chr8 chr9 chr10 chr11 chr12 chr13 chr14 chr15 chr16 chr17 chr18 chr19 chrX chrY chrM >> $(basename $f .bam).f.sam
+  samtools view -Sb $(basename $f .bam).f.sam | samtools sort - -o $(basename $f .bam).f.bam
+  samtools index $(basename $f .bam).f.bam && rm $(basename $f .bam).f.sam
+done
+
+cd ../bam2
+for f in 01-wt-input-1_mm10_rmd.bam 07-wt-input-2_mm10_rmd.bam 03-wt-k27me3-1_mm10_rmd.bam 09-wt-k27me3-2_mm10_rmd.bam 05-wt-k36me2-1_mm10_rmd.bam 11-wt-k36me2-2_mm10_rmd.bam 1F-Wt-Spleen-CD8-T-RNAAligned.sortedByCoord.out.bam 4M-Wt-Spleen-CD8--T-RNAAligned.sortedByCoord.out.bam Lane2-5_R1.bam Lane2-6_R1.bam SRR6228881.bam SRR6228882.bam 
+do
+  samtools sort $f -o $(basename $f .bam).f.bam
+  samtools index $(basename $f .bam).f.bam
+  samtools view -H $(basename $f .bam).f.bam | awk '$2 !~ /SN:.*_/' > $(basename $f .bam).f.sam
+  samtools view -q 8 -f 2 $(basename $f .bam).f.bam chr1 chr2 chr3 chr4 chr5 chr6 chr7 chr8 chr9 chr10 chr11 chr12 chr13 chr14 chr15 chr16 chr17 chr18 chr19 chrX chrY chrM >> $(basename $f .bam).f.sam
+  samtools view -Sb $(basename $f .bam).f.sam | samtools sort - -o $(basename $f .bam).f.bam
+  samtools index $(basename $f .bam).f.bam && rm $(basename $f .bam).f.sam
+done
+
+cd ../bam2
+for f in *.bam 
+do
+ java -Xmx8G -jar $BINDIR/picard.jar ReorderSam I=$f O=$(basename $f .bam).f.ba2 R=$MOUSESEQ/GRCm38.primary_assembly.genome.fa
+ samtools view -h -q 8 -f 2 $(basename $f .bam).f.ba2 | samtools sort - -o $(basename $f .bam).f.bam
+ rm $(basename $f .bam).f.ba2
+done
+
+rename 's/\.ba2$/\.bam/' *.ba2
+
+
+
+#########################
+### chromHMM:
+#########################
+cd $BASEDIR3/
+export PATH=$BINDIR/ChromHMM/:$PATH
+chromosomelengthfile="$BASEDIR3/chrNameLength.txt"
+
+## binarize SE data:
+inputbamdir="$BASEDIR3/bam"
+cellmarkfiletable="$BASEDIR3/controlfile.txt"
+outputbinarydir="$BASEDIR3/binarized/binary1"
+java -jar -Xmx40g $BINDIR/ChromHMM/ChromHMM.jar BinarizeBam -gzip $chromosomelengthfile $inputbamdir $cellmarkfiletable $outputbinarydir
+
+## binarize PE data:
+inputbamdir="$BASEDIR3/bam2"
+cellmarkfiletable="$BASEDIR3/controlfile2.txt"
+outputbinarydir="$BASEDIR3/binarized/binary2"
+java -jar -Xmx40g $BINDIR/ChromHMM/ChromHMM.jar BinarizeBam -paired -gzip $chromosomelengthfile $inputbamdir $cellmarkfiletable $outputbinarydir
+
+## combine binarized directories
+java -jar -Xmx4g $BINDIR/ChromHMM/ChromHMM.jar MergeBinary -gzip $BASEDIR3/binarized $BASEDIR/chromHMM/outbin
+
+## learn model
+inputdir="$BASEDIR3/outbin"
+outputdir="$BASEDIR3/Model1_restr"
+numstates=15
+assembly="mm10"
+java -jar -Xmx40g $BINDIR/ChromHMM/ChromHMM.jar LearnModel -p 6 $inputdir $outputdir $numstates $assembly
+
+## overlap with spleen chromHMM model
+inputsegment="$BASEDIR3/Model1_restr/CD8T_15_segments.bed"
+inputcoorddir="$BASEDIR3/beds"
+outfileprefix="Model1_restr_15_cHMM_Spleen"
+java -jar -Xmx40g $BINDIR/ChromHMM/ChromHMM.jar OverlapEnrichment $inputsegment $inputcoorddir $outfileprefix
+
+outfileprefix="Model1_restr_15_cHMM_Spleen_uniscale"
+java -jar -Xmx40g $BINDIR/ChromHMM/ChromHMM.jar OverlapEnrichment -uniformscale $inputsegment $inputcoorddir $outfileprefix
+
+## overlap with differentially enriched regions between cTKO and WT
+inputcoorddir="$BASEDIR3/diffBeds"
+outfileprefix="New_model1_restr_15_"
+java -jar -Xmx40g $BINDIR/ChromHMM/ChromHMM.jar OverlapEnrichment $inputsegment $inputcoorddir $outfileprefix
+
+### ChromHMM.jar version 1.18
+
+
+#########################
+### HiC:
+#########################
+
+## set data directories
+HiCProDir="/media/b/7f143ccd-2d92-4999-958c-3ac32981a476/hicbin/HiC-Pro_2.11.3-beta"
+MM10Dir="/media/Data/General_References/Genomes/mm10/Mus_musculus/UCSC/mm10"
+GENOME="$MM10Dir/Sequence/WholeGenomeFasta/genome.fa"
+HiCBaseDir="/media/b/7f143ccd-2d92-4999-958c-3ac32981a476/Michael/HiC"
+
+## install HiC-Pro:
+git clone -b devel https://github.com/nservant/HiC-Pro
+# pull: git pull origin devel https://github.com/nservant/HiC-Pro
+cd HiC-Pro/
+# set /media/b/7f143ccd-2d92-4999-958c-3ac32981a476/hicbin as PREFIX
+make configure
+make install
+
+export PATH=$HiCProDir/bin/:$PATH
+
+## prepare digest:
+
+cd $HiCProDir/annotation/
+$HiCProDir/bin/utils/digest_genome.py \
+-r ^GATC G^ANTC -o Arima_resfrag_N_mm10.bed $GENOME
+
+
+## combine runs:
+cat $HiCBaseDir/root_off/raw_off/WT_M_S1_1/WT_CD8pos_M_S1_L001_R1_001.fastq.gz \
+$HiCBaseDir/root_off/raw_off/WT_M_S1_2/WT_CD8pos_M_S1_L002_R1_001.fastq.gz > \
+$HiCBaseDir/root/raw/WT_M_S1/WT_CD8pos_M_S1_R1_001.fastq.gz
+cat $HiCBaseDir/root_off/raw_off/WT_M_S1_1/WT_CD8pos_M_S1_L001_R2_001.fastq.gz \
+$HiCBaseDir/root_off/raw_off/WT_M_S1_2/WT_CD8pos_M_S1_L002_R2_001.fastq.gz > \
+$HiCBaseDir/root/raw/WT_M_S1/WT_CD8pos_M_S1_R2_001.fastq.gz
+
+cat $HiCBaseDir/root_off/raw_off/WT_F_S2_1/WT_CD8pos_F_S2_L001_R1_001.fastq.gz \
+$HiCBaseDir/root_off/raw_off/WT_F_S2_2/WT_CD8pos_F_S2_L002_R1_001.fastq.gz > \
+$HiCBaseDir/root/raw/WT_F_S2/WT_CD8pos_F_S2_R1_001.fastq.gz
+cat $HiCBaseDir/root_off/raw_off/WT_F_S2_1/WT_CD8pos_F_S2_L001_R2_001.fastq.gz \
+$HiCBaseDir/root_off/raw_off/WT_F_S2_2/WT_CD8pos_F_S2_L002_R2_001.fastq.gz > \
+$HiCBaseDir/root/raw/WT_F_S2/WT_CD8pos_F_S2_R2_001.fastq.gz
+
+cat $HiCBaseDir/root_off/raw_off/TKO_M_S3_1/TKO_CD8pos_M_S3_L001_R1_001.fastq.gz \
+$HiCBaseDir/root_off/raw_off/TKO_M_S3_2/TKO_CD8pos_M_S3_L002_R1_001.fastq.gz > \
+$HiCBaseDir/root/raw/TKO_F_S3/TKO_CD8pos_M_S3_R1_001.fastq.gz
+cat $HiCBaseDir/root_off/raw_off/TKO_M_S3_1/TKO_CD8pos_M_S3_L001_R2_001.fastq.gz \
+$HiCBaseDir/root_off/raw_off/TKO_M_S3_2/TKO_CD8pos_M_S3_L002_R2_001.fastq.gz > \
+$HiCBaseDir/root/raw/TKO_F_S3/TKO_CD8pos_M_S3_R2_001.fastq.gz
+
+cat $HiCBaseDir/root_off/raw_off/TKO_F_S4_1/TKO_CD8pos_F_S4_L001_R1_001.fastq.gz \
+$HiCBaseDir/root_off/raw_off/TKO_F_S4_2/TKO_CD8pos_F_S4_L002_R1_001.fastq.gz > \
+$HiCBaseDir/root/raw/TKO_F_S4/TKO_CD8pos_F_S4_R1_001.fastq.gz
+cat $HiCBaseDir/root_off/raw_off/TKO_F_S4_1/TKO_CD8pos_F_S4_L001_R2_001.fastq.gz \
+$HiCBaseDir/root_off/raw_off/TKO_F_S4_2/TKO_CD8pos_F_S4_L002_R2_001.fastq.gz > \
+$HiCBaseDir/root/raw/TKO_F_S4/TKO_CD8pos_F_S4_R2_001.fastq.gz
+
+
+## run HiC-Pro (config file in submission_info_2020 dir) (HiC-Pro alignment and generation of contact matrices at fixed resolutions (25,000 50,000 100,000 500,000 1,000,000))
+export PATH=/media/Data/sw/source/bbmap/:$PATH
+export PATH=/home/b/bin/sambamba/:$PATH
+HiC-Pro -i $HiCBaseDir/root/raw -o $HiCBaseDir/root/out -c $HiCBaseDir/root/config-hicpro.txt
+
+
+## multiQC (v. 1.6):
+cd $HiCBaseDir/root
+conda activate python3
+multiqc .
+
+
+## combine WT and TKO samples, respectively, according to https://github.com/nservant/HiC-Pro/issues/121: doubly merged to get WT and TKO pooled samples for A/B compartment analysis with CScoreTool (moved files to raw_off and out_off)
+HiC-Pro -i $HiCBaseDir/root/rawdata -o $HiCBaseDir/root/out \
+-c $HiCBaseDir/root/config-hicpro.txt -s merge_persample -s build_contact_maps -s ice_norm
+
+
+## download and build CscoreTool:
+cd /media/Data/sw
+git clone https://github.com/scoutzxb/CscoreTool
+cd CscoreTool
+g++ CscoreTool1.1.cpp twister.cpp -fopenmp -O3 -o CscoreTool1.1
+chmod +x CscoreTool1.1
+
+## build generateEqualLengthBed and generate 10kb windows
+g++ ./generateEqualLengthBed.cpp -fopenmp -O3 -o generateEqualLengthBed
+./generateEqualLengthBed mm10_chrsizes.txt mm10_10k.bed 10000
+
+
+## filter HiC contact matrices on intrachromosomal for CScoreTool
+awk -v OFS="\t" '$2 == $5 { print $1,$2,$3,$4,$5,$6,$7}' \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.allValidPairs > \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.intra_f
+
+
+## filter HiC contact matrices on intrachromosomal and minimum distance > 5kb for CScoreTool
+awk -v OFS="\t" '( $2 == $5 ) && ( $6 - $3 +1 > 5000) { print $1,$2,$3,$4,$5,$6,$7}' \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.allValidPairs > \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.intra_f1
+
+awk -v OFS="\t" '{ print $1,$2,$3,$4,$5,$6,$7}' \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.allValidPairs > \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.intra
+
+./CscoreTool1.1 mm10_10k.bed \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.intra  WT_CScore_ 8 1000000
+
+awk -v OFS="\t" '( $2 == $5 ) && ( $6 - $3 +1 > 5000)  { print $1,$2,$3,$4,$5,$6,$7}' \
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO.allValidPairs > \
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO.intra_f1
+
+awk -v OFS="\t" '{ print $1,$2,$3,$4,$5,$6,$7}' 
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO.allValidPairs > \
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO.intra
+
+./CscoreTool1.1 mm10_10k.bed \
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO.intra TKO.CScore_ 8 1000000
+
+g++ ./generateEqualLengthBed.cpp -fopenmp -O3 -o generateEqualLengthBed
+./generateEqualLengthBed mm10_chrsizes.txt mm10_100k.bed 100000
+
+./CscoreTool1.1 mm10_100k.bed \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.intra \
+ $HiCBaseDir/root/out/hic_results/data/WT/WT_CScore100k_ 8 1000000
+
+./CscoreTool1.1 mm10_100k.bed \
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO.intra \
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO_CScore100k_ 8 1000000
+
+./CscoreTool1.1 mm10_100k.bed \
+$HiCBaseDir/root/out/hic_results/data/WT/WT.intra_f1 \
+$HiCBaseDir/root/out/hic_results/data/WT/WT_CScore100kf_ 8 1000000
+
+./CscoreTool1.1 mm10_100k.bed \
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO.intra_f1 \
+$HiCBaseDir/root/out/hic_results/data/TKO/TKO_CScore100kf_ 8 1000000
+
+## calculate 100kb CScore with replicates:
+./CscoreTool1.1 mm10_100k.bed \
+$HiCBaseDir/root/out_off/hic_results/data/WT_M_S1/WT_M_S1.allValidPairs \
+$HiCBaseDir/root/out/hic_results/data/WT_M_S1_CScore100k_ 8 1000000
+
+./CscoreTool1.1 mm10_100k.bed \
+$HiCBaseDir/root/out_off/hic_results/data/WT_F_S2/WT_F_S2.allValidPairs \
+$HiCBaseDir/root/out/hic_results/data/WT_F_S2_CScore100k_ 8 1000000
+
+./CscoreTool1.1 mm10_100k.bed \
+$HiCBaseDir/root/out_off/hic_results/data/TKO_M_S3/TKO_M_S3.allValidPairs \
+$HiCBaseDir/root/out/hic_results/data/TKO_M_S3_CScore100k_ 8 1000000
+
+./CscoreTool1.1 mm10_100k.bed \
+$HiCBaseDir/root/out_off/hic_results/data/TKO_F_S4/TKO_F_S4.allValidPairs \
+$HiCBaseDir/root/out/hic_results/data/TKO_F_S4_CScore100k_ 8 1000000
+
+## Convert HiC-Pro output to Juicebox input up to restriction fragment resolution with Juicer Tools (Version 1.14.08) (juicer .hic format)
+cd $HiCBaseDir/root/out/hic_results/data/
+parallel -i -j 2 bash -c 'f="{}"; g="${f%.*}"; $HiCProDir/bin/utils/hicpro2juicebox.sh -i "$f" -g mm10 -j /media/Data/sw/source/juicer/scripts/juicer_tools.jar -r $HiCProDir/annotation/Arima_resfrag_N_mm10.bed' -- $(find -name '*.allValidPairs')
+
+
+## same with uncombined replicates (generate .hic files):
+cd $HiCBaseDir/root/out_off/hic_results/data/
+parallel -i -j 2 bash -c 'f="{}"; g="${f%.*}"; $HiCProDir/bin/utils/hicpro2juicebox.sh -i "$f" -g mm10 -j /media/Data/sw/source/juicer/scripts/juicer_tools.jar -r $HiCProDir/annotation/Arima_resfrag_N_mm10.bed' -- $(find -name '*.allValidPairs')
+
+
+# convert to WT and TKO combined matrices to cool format for coolpuppy stacking (using hicConvertFormat, v. 3.4.2):
+MDIR="$HiCBaseDir/root/out/hic_results/matrix/WT/iced/100000"
+cd $HiCBaseDir/root/out/hic_results/data/
+hicConvertFormat -m $MDIR/WT_100000_iced.matrix --bedFileHicpro $HiCBaseDir/root/out/hic_results/matrix/WT/raw/100000/WT_100000_abs.bed --inputFormat hicpro --outputFormat cool -o WT_100000_matrix.cool
+
+MDIR="$HiCBaseDir/root/out/hic_results/matrix/TKO/iced/100000"
+cd $HiCBaseDir/root/out/hic_results/data/
+hicConvertFormat -m $MDIR/TKO_100000_iced.matrix --bedFileHicpro $HiCBaseDir/root/out/hic_results/matrix/TKO/raw/100000/TKO_100000_abs.bed --inputFormat hicpro --outputFormat cool -o TKO_100000_matrix.cool
+
+
+# convert to WT and TKO combined matrices to cool format for coolpuppy stacking (using raw 25kb matrix)
+MDIR="$HiCBaseDir/root/out/hic_results/matrix/WT/raw/25000"
+cd $HiCBaseDir/root/out/hic_results/data/
+hicConvertFormat -m $MDIR/WT_25000.matrix --bedFileHicpro $MDIR/WT_25000_abs.bed --inputFormat hicpro --outputFormat cool -o WT_25k_matrix.cool
+
+MDIR="$HiCBaseDir/root/out/hic_results/matrix/TKO/raw/25000"
+cd $HiCBaseDir/root/out/hic_results/data/
+hicConvertFormat -m $MDIR/TKO_25000.matrix --bedFileHicpro $MDIR/TKO_25000_abs.bed --inputFormat hicpro --outputFormat cool -o TKO_25k_matrix.cool
+
+# balance matrixes with cooler, version 0.8.5:
+cooler balance --blacklist /media/Data/General_References/Genomes/mm10/mm10.blacklist.bed WT_25k_matrix.cool
+cooler balance --blacklist /media/Data/General_References/Genomes/mm10/mm10.blacklist.bed TKO_25k_matrix.cool
+
+# compute expected HiC signal with cooltools, version 0.3.0:
+cooltools compute-expected -p8 -o WT_25k_matrix.cool.expected.tsv WT_25k_matrix.cool
+cooltools compute-expected -p8 -o TKO_25k_matrix.cool.expected.tsv TKO_25k_matrix.cool
+
+## perform stacking with coolpup.py (v. 0.9.3) and plotting with plotpup.py
+
+coolpup.py --rescale --local --n_proc 8 --rescale_pad 10 --rescale_size 99 --outname TKO_25k_matrix_decmpct_2.txt --log WARNING TKO_25k_matrix.cool /media/b/7f143ccd-2d92-4999-958c-3ac32981a476/Michael/HiC/root/out/hic_results/decmpct.bed
+coolpup.py --rescale --local --n_proc 8 --rescale_pad 10 --rescale_size 99 --outname TKO_25k_matrix_cmpct_2.txt --log WARNING TKO_25k_matrix.cool /media/b/7f143ccd-2d92-4999-958c-3ac32981a476/Michael/HiC/root/out/hic_results/cmpct.bed
+
+plotpup.py WT_25k_matrix_cmpct_2.txt WT_25k_matrix_decmpct_2.txt TKO_25k_matrix_cmpct_2.txt TKO_25k_matrix_decmpct_2.txt --row_names WT,TKO --enrichment 1 --col_names cmpct,decmpct --output cmpct_decmpct_25_pu2.png
+plotpup.py WT_25k_matrix_cmpct_2.txt TKO_25k_matrix_cmpct_2.txt --row_names WT,TKO --enrichment 0 --output cmpct_25_pu2.png
+plotpup.py WT_25k_matrix_decmpct_2.txt TKO_25k_matrix_decmpct_2.txt --row_names WT,TKO --enrichment 0 --output decmpct_25_pu2.png
+
+
+## TAD analysis using OnTAD (v1.2; https://github.com/anlin00007/OnTAD) using 50 kb resolution matrix from combined HiC-Pro WT sample
+MDIR="$HiCBaseDir/root/out/hic_results/matrix/WT/raw/50000/"
+CHRS=($(cut -f1 /media/Data/sw/source/CscoreTool/mm10_chrsizes.txt))
+CHRSZ=($(cut -f2 /media/Data/sw/source/CscoreTool/mm10_chrsizes.txt))
+
+# generate dense matrices per chromosome as input for OnTAD
+cd $MDIR
+python $HiCProDir/bin/utils/sparseToDense.py -b $MDIR/WT_50000_abs.bed -g /media/Data/sw/source/CscoreTool/mm10_chrsizes.txt --perchr -o WT50k.matrix $MDIR/WT_50000.matrix
+
+# find TADs
+for f in {0..21}
+do
+  CHR=${CHRS[$f]}
+  Z=${CHRSZ[$f]}
+  echo "processing $CHR ..."
+  OnTAD ${CHR}_WT50k.matrix -penalty 0.1 -minsz 1 -maxsz 200 -lsize 4 -o OnTAD_WT50norm_pen0.1_max200_${CHR} -bedout $CHR $Z 50000
+done
+
+
+
+#########################
+#### THOR ChIP-seq quantification:
+#########################
+
+## using housekeeping genes:
+THORRGT="/home/b/rgtdata/mm10"
+## re-scaled 1st sample:
+rgt-THOR --report --housekeeping-genes $THORRGT/norm_regions_H3K27me3.bed -m --binsize 200 --step 100 --no-correction --output-dir $BASEDIR/30_158735468/H3K27me3_ctko_vs_wt_exp2 -n H3K27me3 --save-input H3K27me3.config
+
+rgt-THOR --report --housekeeping-genes $THORRGT/norm_regions_H3K36me2.bed -m --binsize 200 --step 100 --no-correction --output-dir $BASEDIR/30_158735468/H3K36me2_ctko_vs_wt_exp2 -n H3K36me2 --save-input H3K36me2.config
+
+
