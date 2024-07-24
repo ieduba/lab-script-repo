@@ -17,10 +17,10 @@ opts.add_option('-r', help = '<resolution> resolution in bp of mcool to use for 
 options, arguments = opts.parse_args()
 
 def makecvd(clr, hg38_arms):
-	# select only those chromosomes available in cooler
+	## select only those chromosomes available in cooler
 	hg38_arms = hg38_arms[hg38_arms.chrom.isin(clr.chromnames)].reset_index(drop=True)
 
-	# cvd == contacts-vs-distance
+	## cvd == contacts-vs-distance
 	cvd_smooth_agg = cooltools.expected_cis(
 		clr=clr,
 		view_df=hg38_arms,
@@ -32,9 +32,9 @@ def makecvd(clr, hg38_arms):
 	cvd_smooth_agg['s_bp'] = cvd_smooth_agg['dist']* resolution
 	cvd_smooth_agg['balanced.avg.smoothed.agg'].loc[cvd_smooth_agg['dist'] < 2] = np.nan
 
-	# Just take a single value for each genomic separation
+	## Just take a single value for each genomic separation
 	cvd_merged = cvd_smooth_agg.drop_duplicates(subset=['dist'])[['s_bp', 'balanced.avg.smoothed.agg']]
-	# Calculate derivative in log-log space
+	## Calculate derivative in log-log space
 	der = np.gradient(np.log(cvd_merged['balanced.avg.smoothed.agg']),
 			  np.log(cvd_merged['s_bp']))
 	
@@ -47,21 +47,22 @@ mc_files = options.m.split(',')
 mc_names = re.sub(",","_",options.m)
 resolution = int(options.r)
 
-# Use bioframe to fetch the genomic features from the UCSC.
+## Use bioframe to fetch the genomic features from the UCSC.
 hg38_chromsizes = bioframe.fetch_chromsizes('hg38')
 hg38_cens = bioframe.fetch_centromeres('hg38')
-# create a view with chromosome arms using chromosome sizes and definition of centromeres
+## create a view with chromosome arms using chromosome sizes and definition of centromeres
 hg38_arms = bioframe.make_chromarms(hg38_chromsizes,  hg38_cens)
 
-# Use makecvd funciton to make contact vs distance data for each mcool, then plot
+## Use makecvd funciton to make contact vs distance data for each mcool, then plot
 
 f, axs = plt.subplots(
-	figsize=(7,11),
+	figsize=(8,11),
 	nrows=2,
 	gridspec_kw={'height_ratios':[6,2]},
 	sharex=True)
 
 for mc in mc_files:
+	print(mc)
 	name = f'{mc.split("-")[0]}-{mc.split("-")[1]}'	
 	clr = cooler.Cooler(f'{mc}::/resolutions/{resolution}')
 	(cvd_merged, der) = makecvd(clr, hg38_arms)

@@ -1,7 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-looptypes = ['WT-CTCF','WT-noCTCF','low-CTCF','low-noCTCF']
+#looptypes = ['scr-combo-differential_loops1','scr-combo-differential_loops2','dH1-combo-differential_loops1','dH1-combo-differential_loops2']
+looptypes = ['scrscr-rep','scrlow-rep','lowlow-rep','lowscr-rep', 'scrcommon-rep', 'lowcommon-rep']
 
 maxval = 0
 

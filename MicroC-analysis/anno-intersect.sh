@@ -1,6 +1,6 @@
 #! /bin/bash
 #SBATCH -N 1
-#SBATCH -n 2
+#SBATCH -n 4
 
 source activate microc
 
@@ -24,3 +24,4 @@ bedtools intersect -a $bam -b $bed -wa | samtools view > $anno-temp.sam
 #       anno .pairs file for contact probability analysis
 awk 'NR==FNR{A[$1]=$2;next} A[$1]{print}' $anno-temp.sam $pair > $sample-$anno-mapped-filt.pairs
 
+rm $anno-temp.sam

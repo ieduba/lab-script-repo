@@ -12,28 +12,32 @@ mins <- function(d){
   data.frame(X = d$x[i], Y = d$y[i])
 }
 
-fignum <- "gp-chip"
-#samplelist <- c("scr-12-Het","scr-34-Het","dH1-12-Het","dH1-34-Het","scr-12-Enh","scr-34-Enh","dH1-12-Enh","dH1-34-Enh","scr-12-Tx","scr-34-Tx","dH1-12-Tx","dH1-34-Tx","scr-12-TssA","scr-34-TssA","dH1-12-TssA","dH1-34-TssA")
-samplelist <- c("scr-12-K562-H3K27ac", "scr-34-K562-H3K27ac", "dH1-12-K562-H3K27ac", "dH1-34-K562-H3K27ac","scr-12-K562-H3K9me3", "scr-34-K562-H3K9me3", "dH1-12-K562-H3K9me3", "dH1-34-K562-H3K9me3","scr-12-K562-H3K27me3", "scr-34-K562-H3K27me3", "dH1-12-K562-H3K27me3", "dH1-34-K562-H3K27me3")
-datadir <- "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/Micro-C/in-situ/contact-prob-compare"
+fignum <- "old-new-KIM-combo-txn"
+#samplelist <- c("dH1-12-combo", "dH1-34-combo", "scr-12-combo", "scr-34-combo")
+#samplelist <- c("scr-12-combo-Het","scr-34-combo-Het","dH1-12-combo-Het","dH1-34-combo-Het","scr-12-combo-EnhA","scr-34-combo-EnhA","dH1-12-combo-EnhA","dH1-34-combo-EnhA","scr-12-combo-Tx","scr-34-combo-Tx","dH1-12-combo-Tx","dH1-34-combo-Tx","scr-12-combo-TssA","scr-34-combo-TssA","dH1-12-combo-TssA","dH1-34-combo-TssA", "scr-12-combo-ReprPC","scr-34-combo-ReprPC","dH1-12-combo-ReprPC","dH1-34-combo-ReprPC")
+#samplelist <- c("scr-12-combo-K562-H3K27ac", "scr-34-combo-K562-H3K27ac", "dH1-12-combo-K562-H3K27ac", "dH1-34-combo-K562-H3K27ac","scr-12-combo-K562-H3K9me3", "scr-34-combo-K562-H3K9me3", "dH1-12-combo-K562-H3K9me3", "dH1-34-combo-K562-H3K9me3","scr-12-combo-K562-H3K27me3", "scr-34-combo-K562-H3K27me3", "dH1-12-combo-K562-H3K27me3", "dH1-34-combo-K562-H3K27me3")
+#samplelist <- c("dH1-12-combo-WTvslowup-fixed-symbol-genebody-LFC", "dH1-34-combo-WTvslowup-fixed-symbol-genebody-LFC", "scr-12-combo-WTvslowup-fixed-symbol-genebody-LFC", "scr-34-combo-WTvslowup-fixed-symbol-genebody-LFC", "dH1-12-combo-WTvslow-nochange-genebody-LFC-subsample", "dH1-34-combo-WTvslow-nochange-genebody-LFC-subsample", "scr-12-combo-WTvslow-nochange-genebody-LFC-subsample", "scr-34-combo-WTvslow-nochange-genebody-LFC-subsample")
+samplelist <- c("scr-12-combo-K562_scr1_q1", "scr-34-combo-K562_scr1_q1", "dH1-12-combo-K562_low1_q1", "dH1-34-combo-K562_low1_q1","scr-12-combo-K562_scr1_q4sample", "scr-34-combo-K562_scr1_q4sample", "dH1-12-combo-K562_low1_q4sample", "dH1-34-combo-K562_low1_q4sample")
+datadir <- "/ru-auth/local/home/iduba/linker-histone/Micro-C/in-situ/old-new-combo/sep-bio-reps/contactProb"
 setwd(datadir)
 
 alldf <- setNames(data.frame(matrix(ncol = 6, nrow = 0)), c("Distance", "Orientation","Sample", "CellType", "Region", "Replicate"))
 allcounts <- setNames(data.frame(matrix(ncol = 7, nrow = 0)), c("Breaks", "Density", "Orientation","Sample", "CellType", "Region", "Replicate"))
-allmaxes <- setNames(data.frame(matrix(ncol = 7, nrow = 0)), c("X", "Y", "Orientation", "Peak", "CellType", "Region", "Replicate"))
+allmaxes <- setNames(data.frame(matrix(ncol = 8, nrow = 0)), c("X", "Y", "Orientation", "Sample", "Peak", "CellType", "Region", "Replicate"))
+allslopes <- setNames(data.frame(matrix(ncol = 7, nrow = 0)), c("N", "dY", "Orientation", "Sample", "CellType", "Region", "Replicate"))
 allpeakinfo <- setNames(data.frame(matrix(ncol = 8, nrow = 0)), c("NRL", "Orientation", "Sample", "CellType", "Region", "Replicate", "LongShort", "OddEven"))
 
 for (sample in samplelist){
   namebits <- str_split(sample, "-", 4, simplify=TRUE)
-  region <- namebits[4]
+  region <- str_split(namebits[4], "_", 3, simplify=TRUE)[3]
   celltype <- namebits[1]
   replicate <- namebits[2]
   name <- paste(region, celltype, replicate, sep='-')
  
-  Infile <- paste0(sample, "-gp-mapped-filt-inward-dist.txt")
-  Outfile <- paste0(sample, "-gp-mapped-filt-outward-dist.txt")
-  Tandemfile <- paste0(sample, "-gp-mapped-filt-tandemplus-dist.txt")
-  orientlist <- c("Tandem", "Out")
+  Infile <- paste0(sample, "_genes-genebody-mapped-filt-inward-filt-dist.txt")
+  Outfile <- paste0(sample, "_genes-genebody-mapped-filt-outward-filt-dist.txt")
+  Tandemfile <- paste0(sample, "_genes-genebody-mapped-filt-tandemplus-filt-dist.txt")
+  orientlist <- c("Out")
   
   for (orient in orientlist){
     orfile <- paste0(orient, "file")
@@ -60,6 +64,17 @@ for (sample in samplelist){
    samplemaxes$CellType <- celltype
    samplemaxes$Peak <- as.numeric(row.names(samplemaxes))
    samplemaxes$Replicate <- replicate
+   
+   sampleslopes <- setNames(data.frame(matrix(ncol = 2, nrow = length(samplemaxes$Y)-1)), c("N","dY"))
+   for (i in 2:length(samplemaxes$Peak)){
+     sampleslopes$N[i-1] <- i
+     sampleslopes$dY[i-1] <- samplemaxes$Y[i]-samplemaxes$Y[i-1]
+   }
+   sampleslopes$Orientation <- orient
+   sampleslopes$Sample <- name
+   sampleslopes$Region <- region
+   sampleslopes$CellType <- celltype
+   sampleslopes$Replicate <- replicate   
    
    nrl <- mean(diff(samplemaxes$X, 1))
    samplepeakinfo <- data.frame(NRL=nrl)
@@ -122,21 +137,22 @@ for (sample in samplelist){
 #     mycolor <- "#66A182"
 #   }
    
-    fig1name <- paste(sample, orient, "contactprob.pdf", sep = "-")
-    pdf(fig1name, width = 5, height = 3)
-    print(ggplot(df, aes(x=Distance)) +
-            xlim(c(0,1500)) +
-            geom_histogram(aes(y=..density..), binwidth=10) +
-            geom_line(aes(y= ..density..),stat = 'density', size=1, color=mycolor) +
-            xlab("Genomic distance (bp)")+
-            geom_point(data=samplemaxes, mapping= aes(x=X, y=Y), color=mycolor, size=3, alpha = 0.9) +
-            ylab("Contact probability") +
-            theme_classic(base_size = 20))
-    dev.off()
-    
+#    fig1name <- paste(sample, orient, "contactprob.pdf", sep = "-")
+#    pdf(fig1name, width = 5, height = 3)
+#    print(ggplot(df, aes(x=Distance)) +
+#            xlim(c(0,1500)) +
+#            geom_histogram(aes(y=..density..), binwidth=10) +
+#            geom_line(aes(y= ..density..),stat = 'density', size=1, color=mycolor) +
+#            xlab("Genomic distance (bp)")+
+#            geom_point(data=samplemaxes, mapping= aes(x=X, y=Y), color=mycolor, size=3, alpha = 0.9) +
+#            ylab("Contact probability") +
+#            theme_classic(base_size = 20))
+#    dev.off()
+#    
     alldf <- rbind(alldf, df)
     allcounts <- rbind(allcounts, countsdf)
     allmaxes <- rbind(allmaxes, samplemaxes)
+    allslopes <- rbind(allslopes, sampleslopes)
     allpeakinfo <- rbind(allpeakinfo, as.data.frame(samplepeakinfo))   
   }
 }
@@ -145,32 +161,30 @@ for (sample in samplelist){
   for (orient in "Out"){
     for (region in unique(alldf$Region)){
         
-#        fig3name <- paste(orient, region, "WTvslow-CP.pdf", sep = '-')
-#        pdf(fig3name, width = 6, height = 2.5)
-#        print(ggplot(subset(alldf, Orientation == orient & Region == region), aes(x=Distance, color=Sample)) +
-#                geom_density() +
-#                xlim(0,1500) +
-#                xlab("Distance (bp)") +
-#                ylab("Density") +
-#                scale_color_manual(values=c("#F8766D","#F8766D","#00BFC4","#00BFC4")) +
-#                theme_classic())
-#        dev.off()
-        
-        fig4name <- paste(orient, region, "WTvslow-maxes.pdf", sep = '-')
-        pdf(fig4name, width = 6, height = 2.5)
+        pdf(paste(orient, region, "WTvslow-maxes.pdf", sep = '-'), width = 6, height = 3)
         print(ggplot(subset(allmaxes, Orientation == orient & Region == region)) +
                 geom_line(mapping= aes(x=Peak, y=Y, color=Sample)) +
                 geom_point(mapping= aes(x=Peak, y=Y, color=Sample), size = 1, alpha = 0.9) +
                 ylim(0.0003,0.0028) +
                 ylab("Peak probability") +
                 xlab("Peak number") +
-                scale_x_continuous(breaks=c(2,4,6)) +
+                scale_x_continuous(breaks=c(2,4,6,8)) +
                 scale_color_manual(values=c("#F8766D","#F8766D","#00BFC4","#00BFC4")) +
                 theme_classic())
         dev.off()
         
-        fig4name <- paste(orient, region, "WTvslow-hist.pdf", sep = '-')
-        pdf(fig4name, width = 6, height = 2.5)
+        pdf(paste(orient, region, "WTvslow-slopes.pdf", sep = '-'), width = 6, height = 3)
+        print(ggplot(subset(allslopes, Orientation == orient & Region == region)) +
+                geom_line(mapping= aes(x=N, y=dY, color=Sample)) +
+                geom_point(mapping= aes(x=N, y=dY, color=Sample), size = 1) +
+                ylab("Peak slope") +
+                xlab("Peak number") +
+                scale_x_continuous(breaks=c(2,4,6,8)) +
+                scale_color_manual(values=c("#F8766D","#F8766D","#00BFC4","#00BFC4")) +
+                theme_classic())
+        dev.off()
+        
+        pdf(paste(orient, region, "WTvslow-hist.pdf", sep = '-'), width = 6, height = 3)
         print(ggplot(subset(allcounts, Orientation == orient & Region == region)) +
                 geom_line(mapping= aes(x=Breaks, y=Density, color=Sample), alpha=0.8) +
                 ylab("Density") +
@@ -180,19 +194,8 @@ for (sample in samplelist){
         dev.off()
     }
     for (celltype in unique(alldf$CellType)){
- #     fig3name <- paste(orient, celltype, "hmmregions-CP.pdf", sep = '-')
- #     pdf(fig3name, width = 6, height = 3)
- #     print(ggplot(subset(alldf, Orientation == orient & CellType == celltype), aes(x=Distance, color=Sample)) +
- #       geom_density() +
- #       xlim(0,1500) +
- #       xlab("Distance (bp)") +
- #       ylab("Density") +
- #       scale_color_manual(values=c("#E68613","#E68613","#7CAE00","#7CAE00","#C77CFF","#C77CFF")) +
- #       theme_classic())
- #     dev.off()
-      
-      fig4name <- paste(orient, celltype, "regions-maxes.pdf", sep = '-')
-      pdf(fig4name, width = 6, height = 3)
+     
+      pdf(paste(orient, celltype, "txn-maxes.pdf", sep = '-'), width = 6, height = 3)
       print(ggplot(subset(allmaxes, Orientation == orient & CellType == celltype)) +
         geom_line(mapping= aes(x=Peak, y=Y, color=Sample)) +
         geom_point(mapping= aes(x=Peak, y=Y, color=Sample), size = 1, alpha = 0.9) +
@@ -201,18 +204,29 @@ for (sample in samplelist){
         xlab("Peak number") +
         scale_x_continuous(breaks=c(2,4,6,8)) +
         theme_classic() +
-        #scale_color_manual(values=c("#FFC425","#FFC425","#FF61CC","#FF61CC","#8494FF","#8494FF","#66A182","#66A182")))
+        #scale_color_manual(values=c("#FFC425","#FFC425","#FF61CC","#FF61CC","#8494FF","#8494FF","#66A182","#66A182","#E68000","#E68000")))
         scale_color_manual(values=c("#E68613","#E68613","#7CAE00","#7CAE00","#C77CFF","#C77CFF")))
       dev.off()
       
-      fig4name <- paste(orient, celltype, "regions-hist.pdf", sep = '-')
-      pdf(fig4name, width = 6, height = 3)
+      pdf(paste(orient, celltype, "txn-slopes.pdf", sep = '-'), width = 6, height = 3)
+      print(ggplot(subset(allslopes, Orientation == orient & CellType == celltype)) +
+              geom_line(mapping= aes(x=N, y=dY, color=Sample)) +
+              geom_point(mapping= aes(x=N, y=dY, color=Sample), size = 1, alpha = 0.9) +
+              ylab("Peak slope") +
+              xlab("Peak number") +
+              scale_x_continuous(breaks=c(2,4,6,8)) +
+              theme_classic() +
+              #scale_color_manual(values=c("#FFC425","#FFC425","#FF61CC","#FF61CC","#8494FF","#8494FF","#66A182","#66A182","#E68000","#E68000")))
+              scale_color_manual(values=c("#E68613","#E68613","#7CAE00","#7CAE00","#C77CFF","#C77CFF")))
+      dev.off()
+      
+      pdf(paste(orient, celltype, "txn-hist.pdf", sep = '-'), width = 6, height = 3)
       print(ggplot(subset(allcounts, Orientation == orient & CellType == celltype)) +
         geom_line(mapping= aes(x=Breaks, y=Density, color=Sample), alpha=0.8) +
         ylab("Density") +
         xlab("Distance (bp)") +
         theme_classic() +
-        #scale_color_manual(values=c("#FFC425","#FFC425","#FF61CC","#FF61CC","#8494FF","#8494FF","#66A182","#66A182")))
+        #scale_color_manual(values=c("#FFC425","#FFC425","#FF61CC","#FF61CC","#8494FF","#8494FF","#66A182","#66A182","#E68000","#E68000")))
         scale_color_manual(values=c("#E68613","#E68613","#7CAE00","#7CAE00","#C77CFF","#C77CFF")))
       dev.off()
 

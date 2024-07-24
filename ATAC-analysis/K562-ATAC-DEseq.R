@@ -8,12 +8,12 @@ library(BSgenome.Hsapiens.UCSC.hg38)
 library(GenomicRanges)
 library(apeglm)
 
-rawrundir <- "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/ATAC-seq/KA23-DE/DEseq"
+rawrundir <- "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/ATAC-seq/KA23/DEseq"
 
 setwd(paste0(rawrundir))
 libs = list.files(rawrundir)
-bamFilesVect = libs[grep(".bam", libs)]
-bedfile = import("mergedpeaks.bed", format = "BED")
+bamFilesVect = libs[grep("-no5kbTSS.bam", libs)]
+bedfile = import("reps-mergedpeaks.bed", format = "BED")
 
 ##creates matrix of fragment counts that fall in peaks
 fragmentCounts = getCounts(bamFilesVect, bedfile, paired=TRUE, by_rg=FALSE, format="bam")
@@ -39,10 +39,10 @@ dds <- dds[keep,]
 dds <- DESeq(dds)
 res <- results(dds, contrast = c('Treatment', 'H1low', 'scr'))
 
-save(dds, file ="DEseqDataSet.RData")
-save(res, file ="DEseqResults.RData")
+save(dds, file ="rep-peaks-5kbTSS-DEseqDataSet.RData")
+save(res, file ="rep-peaks-5kbTSS-DEseqResults.RData")
 
-pdf(file = "PlotDisp.pdf")
+pdf(file = "rep-peaks-5kbTSS-PlotDisp.pdf")
 plotDispEsts(dds)
 dev.off()
 
@@ -50,26 +50,29 @@ scrvslowLFC <- lfcShrink(dds, coef="Treatment_H1low_vs_scr", type="apeglm")
 #scrvslowLFC <- lfcShrink(dds, coef="Treatment_H1low_vs_scr", type="normal")
 scrvslowup <- subset(subset(scrvslowLFC, padj < 0.05), log2FoldChange > 1)
 scrvslowdown <- subset(subset(scrvslowLFC, padj < 0.05), log2FoldChange < -1)
-write.csv(scrvslowup, "scrvslow-up.csv")
-write.csv(scrvslowdown, "scrvslow-down.csv")
+write.csv(scrvslowup, "rep-peaks-5kbTSSscrvslow-up.csv")
+write.csv(scrvslowdown, "rep-peaks-5kbTSSscrvslow-down.csv")
+write.csv(scrvslowLFC, "rep-peak-5kbTSS-allLFC.csv")
 
-pdf(file = "MA.pdf")
+pdf(file = "rep-peaks-no5kbTSS-MA.pdf")
 plotMA(scrvslowLFC,alpha=0.05,colSig='red')
 dev.off()
 
 beddf <- data.frame(peak=1:length(bedfile),chr=seqnames(bedfile), start=start(ranges(bedfile)), end=end(ranges(bedfile)))
-updf <- data.frame(peak=rownames(scrvslowup))
+updf <- data.frame(peak=rownames(scrvslowup), baseMean=scrvslowup$baseMean, log2FoldChange=scrvslowup$log2FoldChange)
 upbed <- merge(beddf, updf, by='peak', all=FALSE)
-downdf <- data.frame(peak=rownames(scrvslowdown))
+downdf <- data.frame(peak=rownames(scrvslowdown), baseMean=scrvslowdown$baseMean, log2FoldChange=scrvslowdown$log2FoldChange)
 downbed <- merge(beddf, downdf, by='peak', all=FALSE)
-write.table(upbed[,2:4], "scrvslow-up.bed", row.names = FALSE, col.names = FALSE, quote = FALSE, sep='\t')
-write.table(downbed[,2:4], "scrvslow-down.bed", row.names = FALSE, col.names = FALSE, quote = FALSE, sep='\t')
-
+alldf <- data.frame(peak=rownames(scrvslowLFC), baseMean=scrvslowLFC$baseMean, log2FoldChange=scrvslowLFC$log2FoldChange)
+allbed <- merge(beddf, alldf, by='peak', all=FALSE)
+write.table(upbed[,2:6], "rep-peaks-5kbTSSscrvslow-up.bed", row.names = FALSE, col.names = FALSE, quote = FALSE, sep='\t')
+write.table(downbed[,2:6], "rep-peaks-5kbTSSscrvslow-down.bed", row.names = FALSE, col.names = FALSE, quote = FALSE, sep='\t')
+write.table(allbed[,2:6], "rep-peaks-5kbTSSscrvslow-LFC.bed", row.names = FALSE, col.names = FALSE, quote = FALSE, sep='\t')
 
 widths <- data.frame(width(ranges(bedfile)))
 l2fc <- data.frame(scrvslowLFC$log2FoldChange)
 widthvsl2fc <- merge(widths, l2fc, by='row.names', all=FALSE)
 
-pdf(file = "l2fc-vs-peaksize.pdf")
+pdf(file = "rep-peaks-5kbTSS-l2fc-vs-peaksize.pdf")
 plot(widthvsl2fc$width.ranges.bedfile.., widthvsl2fc$scrvslowLFC.log2FoldChange, pch = '.', xlab='peak width (bp)', ylab='log2fold change')
 dev.off()

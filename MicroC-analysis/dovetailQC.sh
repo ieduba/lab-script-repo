@@ -1,6 +1,6 @@
 #! /bin/bash
 # SBATCH -N 1
-# SBATCH -n 10
+# SBATCH -n 30
 echo This is job $SLURM_JOB_ID
 echo Test permission
 
@@ -18,8 +18,8 @@ cd $dir
 mkdir -p temp
 
 ## make input file names
-read1=$sample\_R1_001.fastq.gz
-read2=$sample\_R2_001.fastq.gz
+read1=$sample\_R1.fastq.gz
+read2=$sample\_R2.fastq.gz
 cut -f1,2 $fasta\.fai > genome.temp
 
 ## make output file names
