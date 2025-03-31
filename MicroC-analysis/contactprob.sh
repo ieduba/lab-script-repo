@@ -12,9 +12,12 @@ mkdir -p contactProb
 cd $1
 pwd
 
-for pair in *slowed*-mapped-filt.pairs; do
+#for pair in *-mapped-filt.pairs; do #may want to change what text it searches for to run on subset of pairs files
+for pair in *allTss-ENCFF963KIA-mapped-filt.pairs; do
 	echo $pair
 	sample=$pair	
+
+## uncomment below if not yet filtered (anno-intersect.sh script does this filtering step)
 	#sample=`echo $pair | sed 's/mapped/mapped-filt/'`
 	#awk '$2 !~ /chrM|chrY|chrU.+|chr.+_.+/ && $4 !~ /chrM|chrY|chrU.+|chr.+_.+/ {print $0}' $pair > $sample
 
@@ -28,7 +31,7 @@ for pair in *slowed*-mapped-filt.pairs; do
 	awk '$6 == "+" && $7 == "+" { print $0 }' $sample > $tandemp
 	awk '$6 == "-" && $7 == "-" { print $0 }' $sample > $tandemm
 
-	# subtract positions of cis pairs to get genomic distance
+	# subtract positions of cis pairs (start of each read) to get genomic distance
 	for file in $inward $outward $tandemp $tandemm; do
 		dist=`echo $file | sed 's/.pairs/-dist.txt/'`
 		awk '$2 == $4 {print $5 - $3}' $file | sort -n > $dist

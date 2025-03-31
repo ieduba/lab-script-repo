@@ -1,0 +1,68 @@
+Load Libraries
+```{r, echo = FALSE, collapse = TRUE, message=FALSE}
+library("ggplot2")
+library("DESeq2")
+library('dplyr')
+library('stringr')
+library('rtracklayer')
+library('msigdbr')
+library('clusterProfiler')
+library('gridExtra')
+```
+ 
+```{r}
+#make function to plot informative MA plots called ggplotMA: 
+  ## data: results from DESeq objects
+  ## genes: if user wishes to label top x # most significantly changing genes, can specify number 1:x
+  ## Title: string that specifies title of MA Plot
+ggplotMA <- function(data, genes, Title){
+  data$Color <- ifelse(data$padj > 0.05, "not significant", ifelse(abs(data$log2FoldChange) > 1, "padj < 0.05 & LFC > 1", "padj < 0.05"))
+MAdefault <- function(data, Title){
+ggplot(as.data.frame(data), aes(x=baseMean, y=log2FoldChange, color=Color))+
+scale_colour_manual(values=c("grey", "pink", "red"))+
+geom_point(data=as.data.frame(data), aes(x=baseMean, y=log2FoldChange), size=0.2)+ 
+scale_x_continuous(trans='log10')+
+ggtitle(paste(Title, "MAPlot"))+
+xlab("log10 Base Mean")+
+theme_classic(base_size = 20)+
+ylim(c(min(-max(data$log2FoldChange),min(data$log2FoldChange)), max(max(data$log2FoldChange),-min(data$log2FoldChange))))+ #centers y axis around 0
+labs(color="Significance")
+  }
+  
+MAdefault(data, Title) 
+}
+``` 
+ 
+```{r}
+genecounts <- read.table(file="~/linker-histone/RNA-seq/yusufova/all-genefeaturecounts.txt", header = TRUE)
+colnames(genecounts) <- c("GeneID","Chr","Start","End","Strand","Length","DKO1","DKO2","DKO3","WT1","WT2","WT3","WT4")
+counts <- dplyr::select(genecounts,DKO1,DKO2,DKO3,WT1,WT2,WT3,WT4)
+rownames(counts) <- gsub('\\.[0-9]*$', '',genecounts$GeneID)
+
+colData <- as.data.frame(x = c("DKO", "DKO", "DKO", "WT", "WT", "WT", "WT"))
+colnames(colData) <- c("genotype")
+colData$genotype <- as.factor(colData$genotype)
+colData$genotype <- factor(colData$genotype,levels = c("WT", "DKO"))
+rownames(colData) <- colnames(counts)
+
+dds <- DESeqDataSetFromMatrix(countData = counts, colData = colData, design = ~genotype)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+de.dds <- DESeq(dds)
+write.csv(assay(de.dds), "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/yusufova/DESeq2_results/dds_raw_counts_matrix-noctrl.csv")
+plotDispEsts(de.dds)
+
+resLFC <- lfcShrink(de.dds, coef="genotype_DKO_vs_WT", type="normal")
+resLFC.noNA <- na.omit(resLFC)
+ggplotMA(resLFC.noNA, 1:20, "WTvsDKO (LFC)")
+
+resLFC.df <- as.data.frame(resLFC.noNA)
+resLFC.df$type <- ifelse(resLFC.df$padj < 0.05 & resLFC.df$log2FoldChange > 1, "Up", ifelse(resLFC.df$padj < 0.05 & resLFC.df$log2FoldChange < -1, "Down", "Not significant"))
+write.csv(resLFC.df, "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/yusufova/DESeq2_results/WTvsDKO-noctrl.csv")
+
+WTvslowup <- subset(subset(resLFC, padj < 0.05), log2FoldChange > 1)
+WTvslowdown <- subset(subset(resLFC, padj < 0.05), log2FoldChange < -1)
+write.csv(WTvslowup, "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/yusufova/DESeq2_results/WTvsDKOup-noctrl.csv")
+write.csv(WTvslowdown, "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/yusufova/DESeq2_results/WTvsDKOdown-noctrl.csv")
+```

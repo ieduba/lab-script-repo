@@ -4,9 +4,11 @@
 
 source activate encode-atac-seq-pipeline
 
-for mark in low scr; do
+for mark in H1low_H1p2_r1_S38 Scrm_H1p2_r3_S15; do
+#for mark in low scr; do
 	for region in TSS activeTSS CTCF; do
-		bws=`ls $mark\_*_in_human.bw`
+		bws=$mark\_001.trim.st.all.blft.qft.rmdup.bw
+#		bws=`ls $mark\_*_in_human.bw`
 		matname=$mark-$region.mat.gz
 		profilename=$mark-$region\pileup.pdf
 		

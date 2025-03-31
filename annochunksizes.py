@@ -1,4 +1,5 @@
 import numpy as np
+import visual_standard
 from matplotlib import pyplot as plt
 from optparse import OptionParser
 
@@ -11,7 +12,8 @@ bed = np.loadtxt(options.b)
 print('total: ', sum(bed))
 print('mean: ', np.average(bed))
 print('max: ',max(bed))
-plt.hist(bed, bins = np.linspace(0,1000000,50))
+plt.hist(bed, bins = np.linspace(0,1000000,50),density=True)
+#plt.ylim(0,1)
 plt.xlabel('annotation chunk size')
 plt.ylabel('counts')
 plt.suptitle(options.b)

@@ -1,0 +1,358 @@
+---
+title: "RNA_seq_analysis_template"
+author: "Joanna Yeung"
+date: "9/16/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+#load packages
+```{r}
+library(readr)
+library(tximport)
+library(rtracklayer)
+library(GenomicFeatures)
+library(DESeq2)
+library(apeglm)
+library(gridExtra)
+library(ggplot2)
+library(pheatmap)
+library(clusterProfiler)
+library(msigdbr)
+library(Rhdf5lib)
+library(rhdf5)
+library(ggrepel)
+library(org.Hs.eg.db)
+```
+
+# MAKE DATAFRAME WITH INFORMATION ON GENES & THEIR DIFFERENT ID TYPES
+---------------------------------------------------------------------------------------------------
+## since anything later than v79 is not available in this version of R studio, I downloaded v107 from http://ftp.ensembl.org/pub/release-107/gff3/homo_sapiens/
+```{r}
+Ens_genes_v107 <- import(con="/lustre/fs4/risc_lab/store/jyeung/Homo_sapiens.GRCh38.107.gff3") #import v107 of ensembl hg38 as GRanges object
+Ens_genes_v107 <- Ens_genes_v107 %>% as.data.frame() %>% dplyr::filter(!is.na(gene_id)) %>% dplyr::distinct(Name, description, gene_id) # convert to data frame, then filter out gene symbol id's that are NA, then filter for unique row values in Name, description and gene_id columns
+colnames(Ens_genes_v107) <- c("gene_id","description", "ensembl_id") # change column names so that they can be merged with NCBI's GRCh38.p14 dataframe by gene_id column
+
+# ensembl database does not have NCBI entrez ID format, so the latest version of hg38 from NCBI is downloaded here. 
+GRCh38.p14 <- import(con="/lustre/fs4/risc_lab/store/jyeung/ncbi-genomes-2022-09-11/GCF_000001405.40_GRCh38.p14_genomic.gtf") # import latest version of GRCh38 as GRanges object
+
+GRCh38.p14$entrezid <- gsub('.*\\GeneID:','', GRCh38.p14$db_xref) # make entrez_id column, which is value in db_xref column but without 'GeneID:' written before the entrez id
+GRCh38.p14 <- GRCh38.p14[, c(1:16, 31)] # keep only these columns
+GRCh38.p14_genesdf <- GRCh38.p14 %>% as.data.frame() %>% dplyr::distinct(gene_id, description, entrezid) # filter for unique row values in columns, gene_id, description & entrezid
+GRCh38.p14_genesdf <- GRCh38.p14_genesdf[-(grep("HGNC|MIM|RFAM|miRBase", GRCh38.p14_genesdf$entrezid)), ] #filter out rows which have "HGNC|MIM|RFAM|miRBase" in the entrezid column, b/c these are not entrez id's. 
+
+# merge these two dataframes together to get a database containing the latest version of entrez, gene symbol and ensembl annotation for genes
+genes_anno_type <- merge(Ens_genes_v107, GRCh38.p14_genesdf[, c(1,3)], by="gene_id", all=T)
+```
+
+# MSIGDBR DATASETS: 
+## download msigdb databases, to be used for GO enrichment analysis. 
+```{r}
+# msigdb GO Biological Processes database
+msigdbr_df_GO_BP <- as.data.frame(msigdbr(species = "Homo sapiens", category="C5", subcategory ="GO:BP"))
+msigdbr_t2g_GO_BP = msigdbr_df_GO_BP %>% dplyr::distinct(gs_name, entrez_gene) %>% as.data.frame()
+msigdbr_t2g_GO_BP$gs_name <- sub("GOBP_", "", msigdbr_t2g_GO_BP$gs_name) # remove GOBP_ in front of every GO term because it's annoying.
+msigdbr_t2g_GO_BP$gs_name <- gsub("_", " ", msigdbr_t2g_GO_BP$gs_name)
+
+# msigdb Hallmark database
+msigdbr_df_H <- as.data.frame(msigdbr(species = "Homo sapiens", category="H", subcategory =""))
+msigdbr_t2g_H = msigdbr_df_H %>% dplyr::distinct(gs_name, entrez_gene) %>% as.data.frame()
+msigdbr_t2g_H$gs_name <- sub("HALLMARK_", "", msigdbr_t2g_H$gs_name)
+msigdbr_t2g_H$gs_name <- gsub("_", " ", msigdbr_t2g_H$gs_name)
+
+# msigdb KEGG pathway database
+msigdbr_df_KEGG <- as.data.frame(msigdbr(species = "Homo sapiens", category="C2", subcategory ="CP:KEGG"))
+msigdbr_t2g_KEGG = msigdbr_df_KEGG %>% dplyr::distinct(gs_name, entrez_gene) %>% as.data.frame()
+msigdbr_t2g_KEGG$gs_name <- sub("KEGG_", "", msigdbr_t2g_KEGG$gs_name)
+msigdbr_t2g_KEGG$gs_name <- gsub("_", " ", msigdbr_t2g_KEGG$gs_name)
+
+# msigdb Immunesigdb pathway database
+msigdbr_df_IMMUNE <- as.data.frame(msigdbr(species = "Homo sapiens", category="C7", subcategory ="IMMUNESIGDB"))
+msigdbr_t2g_IMMUNE = msigdbr_df_IMMUNE %>% dplyr::distinct(gs_name, entrez_gene) %>% as.data.frame()
+msigdbr_t2g_IMMUNE$gs_name <- sub("IMMUNE_", "", msigdbr_t2g_IMMUNE$gs_name)
+msigdbr_t2g_IMMUNE$gs_name <- gsub("_", " ", msigdbr_t2g_IMMUNE$gs_name)
+
+# msigdb Transcription factor targets pathway database
+msigdbr_df_TFT <- as.data.frame(msigdbr(species = "Homo sapiens", category="C3", subcategory="TFT:GTRD"))
+msigdbr_t2g_TFT = msigdbr_df_TFT %>% dplyr::distinct(gs_name, entrez_gene) %>% as.data.frame()
+msigdbr_t2g_TFT$gs_name <- sub("TFT_", "", msigdbr_t2g_TFT$gs_name)
+msigdbr_t2g_TFT$gs_name <- gsub("_", " ", msigdbr_t2g_TFT$gs_name)
+```
+
+#make TxDb object from V29 transcriptome index file--> later, this will be used to convert to different gene id annotations. 
+```{r}
+TxDbGenCode_v29 <- makeTxDbFromGFF("/lustre/fs4/risc_lab/store/jyeung/indexes/V29_Kallisto_index/gencode.v29.primary_assembly.annotation_UCSC_names.gtf", format="gtf", dataSource="GENCODE", organism="Homo sapiens")
+k <- keys(TxDbGenCode_v29, keytype = "TXNAME")
+tx2gene <- AnnotationDbi::select(TxDbGenCode_v29, k, "GENEID", "TXNAME")
+```
+
+# IMPORT KALLISTO PSEUDOCOUNTS
+------------------------------------------------------------
+#specify sample names and paths to kallisto output files. 
+#working with pseudoreplicates of Cycling controls and biological reps of Doxo & Palbo. 
+```{r}
+workdir <- "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/human"
+samplenames <- c("H1-1","H1-2","H1-3","Scr1","Scr2","Scr3")
+#samplenames <- c(samplenames,dir("/lustre/fs4/risc_lab/scratch/jyeung/LS_PDvsDoxo_1/RNAseq/kallisto_7272022")[1:4])
+sampledir <- c()
+for(i in 1:length(samplenames)){
+  sampledir[i] <- paste(workdir, samplenames[i], "abundance.h5", sep="/")
+}
+#sampledir <- c("/lustre/fs4/risc_lab/scratch/jyeung/LS_PDvsDoxo_1/RNAseq/kallisto_7262022/day14_Cyc_1/day14_Cyc_1/abundance.h5", "/lustre/fs4/risc_lab/scratch/jyeung/LS_PDvsDoxo_1/RNAseq/kallisto_7262022/day14_Cyc_2/day14_Cyc_2/abundance.h5", sampledir)
+names(sampledir) <- samplenames
+```
+
+#import kallisto output files, matching transcript id to gene id. 
+```{r}
+# note 9162022: you need to use the conda environment, jr_rna, for this to work, because it has the dependency (rhdf5) installed that tximport requires. You need to quit and restart your R-session, import your kallisto counts, then go to a different conda env where you can use DESeq2 and other packages for downstream analysis. 
+txi.kallisto <- tximport(sampledir, type = "kallisto", tx2gene=tx2gene, ignoreAfterBar = T)
+head(txi.kallisto$counts)
+
+#remove numbers after decimal (specifies version) so you can match ensembl id to gene id/symbol later. 
+row.names(txi.kallisto$counts) <- gsub('\\.[0-9]*$', '', row.names(txi.kallisto$counts))
+```
+
+# DIFFERENTIAL EXPRESSION ANALYSIS WITH DESEQ2
+------------------------------------------------------
+## perform DESeq on DESEq Dataset
+```{r}
+#with Cyc as control to compare conditions against:
+metaData <- data.frame(samplenames, celltype=as.factor(c("H1low", "H1low", "H1low", "WT", "WT", "WT"))) #generate experimental design dataframe
+RNAdds <- DESeqDataSetFromTximport(txi.kallisto, metaData, ~celltype) # create DESeq object from Kallisto counts
+keep <- rowSums(counts(RNAdds)) >= 10 #filter out rows with rowsum less than 10 to remove genes that aren't being expressed across samples. 
+RNAdds <- RNAdds[keep,]
+RNAdds <- DESeq(RNAdds) #perform DESeq
+
+write.csv(assay(RNAdds), "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/human/DESeq2_results/dds_raw_counts_matrix.csv") #save raw counts matrix
+
+plotDispEsts(RNAdds) # plot dispersion estimates to see how dispersion of gene counts is adjusted. 
+
+#extract results from DESeq objects 
+WTvslow <- results(RNAdds, contrast=c("celltype", "WT", "H1low"))
+```
+
+# QUALITY CONTROL METRICS: 
+----------------------------------------------------------------------------
+
+### function: ggplotMA
+```{r}
+#make function to plot informative MA plots called ggplotMA: 
+  ## data: results from DESeq objects
+  ## genes: if user wishes to label top x # most significantly changing genes, can specify number 1:x
+  ## Title: string that specifies title of MA Plot
+ggplotMA <- function(data, genes, Title){
+  #data$Color <- ifelse((data$padj < 0.05 & abs(data$log2FoldChange) > 2), "padj < 0.05 & LFC > 2", "not significant") #column to be used for coloring based on padj threshold value. 
+  data$Color <- ifelse(data$padj > 0.05, "not significant", ifelse(abs(data$log2FoldChange) > 1, "padj < 0.05 & LFC > 1", "padj < 0.05"))
+  MAdefault <- function(data, Title){
+ggplot(as.data.frame(data), aes(x=baseMean, y=log2FoldChange, color=Color))+
+scale_colour_manual(values=c("grey", "pink", "red"))+
+geom_point(data=as.data.frame(data), aes(x=baseMean, y=log2FoldChange), size=0.2)+ 
+scale_x_continuous(trans='log10')+
+ggtitle(paste(Title, "MAPlot"))+
+xlab("log10 Base Mean")+
+theme_classic(base_size = 20)+
+ylim(c(min(-max(data$log2FoldChange),min(data$log2FoldChange)), max(max(data$log2FoldChange),-min(data$log2FoldChange))))+ #centers y axis around 0
+labs(color="Significance")
+  }
+  
+MAdefault(data, Title) #irene doesn't want gene labels  
+
+#if(is.null(genes) == TRUE){
+# MAdefault(data, Title)
+#}else{
+#topGene <-data[order(data$padj, decreasing=F)[genes], "SYMBOL"]
+#topGene <- topGene[!is.na(topGene)]
+#MAdefault(data, Title) + geom_point(data=as.data.frame(data[data$SYMBOL %in% topGene, ]), aes(x=baseMean, y=log2FoldChange), #color="blue", size=0.1)+ #color top user specified number of significant genes in blue 
+#geom_text_repel(data=as.data.frame(data[data$SYMBOL %in% topGene, ]), aes(x=baseMean, y=log2FoldChange, label=SYMBOL), colour="black",  #max.overlaps=getOption("ggrepel.max.overlaps", default = 20)) #label top user specified number of significant genes 
+#  }
+}
+```
+
+### function to add column in DESeq results that contains corresponding gene symbol to ensembl id: AddGeneSymbol
+```{r}
+ #DESeqResults: results extracted from DESeq2 object
+  #Filename: name of file if you wish to write DESeq results to ".csv" format
+  #writetocsv: TRUE or FALSE, used if you want to save DESeq results in ".csv" file
+
+AddGeneSymbol <- function(DESeqResults, Filename, writetocsv){
+  row.names(DESeqResults) <- gsub('\\.[0-9]*$', '', row.names(DESeqResults))
+  geneIDs <- data.frame(ensembl_id=row.names(DESeqResults))
+  geneIDs <- merge(geneIDs, genes_anno_type[ ,c("ensembl_id", "gene_id")], by="ensembl_id", all.x=T)
+  geneIDs <- geneIDs %>% dplyr::distinct(gene_id, ensembl_id)
+  DESeqResults$SYMBOL <- geneIDs[ ,"gene_id"]
+ if(writetocsv == TRUE){write_csv(as.data.frame(DESeqResults),Filename)}
+ return(DESeqResults)
+}
+```
+## MA Plots: to look at overall significant log2FC relative to mean of normalized gene counts.
+### Shrinkage of effect size (LFC estimates) using apeglm method for MA plot visualization. It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds.
+```{r}
+#WTvslowLFC <- lfcShrink(RNAdds, coef="celltype_WT_vs_H1low", type="apeglm")
+WTvslowLFC <- lfcShrink(RNAdds, contrast=c("celltype", "H1low", "WT"), type="normal")
+
+#add gene symbol to row names
+WTvslowLFC <- AddGeneSymbol(WTvslowLFC, "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/human/DESeq2_results/WTvslowLFC-fixed.csv", writetocsv = T)
+WTvslowup <- subset(subset(WTvslowLFC, padj < 0.05), log2FoldChange > 1)
+WTvslowdown <- subset(subset(WTvslowLFC, padj < 0.05), log2FoldChange < -1)
+write.csv(WTvslowup, "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/human/DESeq2_results/WTvslowup-fixed.csv")
+write.csv(WTvslowdown, "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/human/DESeq2_results/WTvslowdown-fixed.csv")
+
+#plot more informative MA plot for WTvslow, label 20 of the genes with the top most significant padj value
+ggplotMA(WTvslowLFC, 1:20, "WTvslow (LFC)")
+
+```
+
+#plot PCA plots
+```{r}
+RNAdds_rlog <- rlog(RNAdds) #perform rlog transformation for visualization and clustering
+#colData(RNAdds_rlog)$celltype <- c("H1low", "H1low", "H1low", "WT", "WT", "WT")
+
+write.csv(assay(RNAdds_rlog), "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/human/DESeq2_results/dds_rlog_counts_matrix.csv") #save rlog transformed counts matrix
+
+#plot PCA
+PCA1 <- plotPCA(RNAdds_rlog, intgroup="celltype")+theme_minimal()+geom_point(size=5)
+```
+
+#plot sample correlation heatmap 
+```{r}
+sampleDists <- dist(t(assay(RNAdds_rlog)))
+sampleDists <- as.dist(1 - sampleDists)
+sampleDistMatrix <- as.matrix(sampleDists)
+#rownames(sampleDistMatrix) <- paste(rld$Info)
+#colnames(sampleDistMatrix) <- TRUE
+
+cor.matrix <-cor(sampleDistMatrix, method="pearson")
+pheatmap(cor.matrix)
+cor_heatmap <- pheatmap(cor.matrix)
+```
+
+#The DEseq2 normTransform() will add a 1 to our normalized counts prior to log2 transform and return a DESeqTransform object
+#plot to visualize counts for each sample
+```{r}
+normLog2Counts <- normTransform(RNAdds)
+head(assays(normLog2Counts)[[1]])
+matrixOfNorm <- assay(normLog2Counts)
+boxplot(matrixOfNorm, las=2, names = colnames(normLog2Counts))
+```
+
+#comparing gene counts across different samples via scatterplot. This is a QC metric of visualizing & comparing variance between biological/pseudo reps vs across celltypes. 
+```{r}
+par(mfrow=c(3,3))
+plot(assay(RNAdds_rlog), pch=20, cex=0.1)
+plot(assay(RNAdds_rlog)[, c(3,5)],  pch=20, cex=0.1)
+plot(assay(RNAdds_rlog)[, c(4,6)],  pch=20, cex=0.1)
+plot(assay(RNAdds_rlog)[, c(1,3)],  pch=20, cex=0.1)
+plot(assay(RNAdds_rlog)[, c(1,4)],  pch=20, cex=0.1)
+plot(assay(RNAdds_rlog)[, c(3,4)],  pch=20, cex=0.1)
+plot(assay(RNAdds_rlog)[, c(5,6)],  pch=20, cex=0.1)
+```
+# CLUSTER ANALYSIS: COMPLETE HIERARCHICAL CLUSTERING
+---------------------------------------------------------------------------
+## perform LRT to cluster genes into groups based on changes in gene expression levels across all samples. 
+```{r}
+#RNAdds3 <- DESeq(RNAdds, test = "LRT", reduced = ~1) # compare current experimental design matrix to a model that would have none of the terms. 
+#acrossGroups <- results(RNAdds3)
+acrossGroups <- results(RNAdds)
+resultsNames(RNAdds3)
+
+acrossGroups <- acrossGroups[order(acrossGroups$padj), ] #order output of LRT test by padj value
+acrossGroups[1:3, ]
+rlogMatrix <- assay(RNAdds_rlog)
+row.names(rlogMatrix)<- gsub('\\.[0-9]*$', '', row.names(rlogMatrix))
+
+#filter for genes changing significantly across groups. 
+#sigChanges <- rownames(acrossGroups)[acrossGroups$padj < 0.05 & !is.na(acrossGroups$padj)]
+sigChanges <- rownames(acrossGroups)[acrossGroups$padj < 0.05 & !is.na(acrossGroups$padj) & abs(acrossGroups$log2FoldChange) > 1] #changed to include LFC threshold
+sigChanges<- gsub('\\.[0-9]*$', '', sigChanges)
+sigMat <- rlogMatrix[rownames(rlogMatrix) %in% sigChanges, ]
+
+#save list of significantly changing genes
+write.csv(as.data.frame(row.names)(sigMat), "/lustre/fs4/risc_lab/scratch/iduba/linker-histone/RNA-seq/human/DESeq2_results/sig_genes.csv")
+```
+
+# visualize gene clusters, then do complete hierarchical clustering
+```{r}
+#visualize rlog transformed gene counts of significantly changing genes across groups. 
+set.seed(153)
+tot_cluster <- pheatmap(sigMat, scale = "row", show_rownames = FALSE) # complete hierarchical clustering of sig changing gene counts 
+
+# Based on heatmap above, I will cut tree formed by complete hierarchical clustering to 2 clusters then get genes from each of those clusters & do GO enrichment on them. 
+rowScaledMat <- t(scale(t(sigMat))) # scale sigMat (make Z scores pers row)
+dists <- t(dist(rowScaledMat)) # convert to dist object for hclust function to accept
+#dists <- t(dist(sigMat)) # get unscaled dists
+hc <- hclust(dists) # do complete hierarchical clustering on scaled rlog transformed read counts
+tot_cluster_2 <- cutree(hc, k=2) # cut the tree to 2 clusters. This object gives the genes that belong to each cluster. 
+ordered_sigMat <- sigMat[hc$order, ] # order by matrix of sig genes' read counts by cluster
+ordered_sigMat <- cbind(ordered_sigMat, cluster=tot_cluster_2[match(row.names(ordered_sigMat), names(tot_cluster_2))]) # add another column that includes cluster gene belongs to
+annotation <- as.data.frame(factor(ordered_sigMat[, 7]), row.names=row.names(ordered_sigMat)) # make dataframe for annotation clusters on heatmap
+colnames(annotation) <- "cluster"
+clust_heatmap <- pheatmap(ordered_sigMat[,c('Scr1','Scr2','Scr3','H1-1','H1-2','H1-3')], scale="row", show_rownames = F, cluster_rows = T, annotation_row=annotation) # generate heatmap showing clusters generated by cutting tree. 
+```
+
+#universe (background gene set) for GO enrichment analysis is all genes expressed
+```{r}
+#universe <-AnnotationDbi::select(EnsDb.Hsapiens.v79, as.character(rlogMatrix_geneIDs$GENEID[!is.na(rlogMatrix_geneIDs$GENEID)]), "ENTREZID", "GENEID")
+universe <- genes_anno_type[match(row.names(RNAdds_rlog), genes_anno_type$ensembl_id), ] ## changed by Irene from rlogMatrix
+```
+
+# GO enrichment analysis on k-means clusters from sigMat (significantly changing genes across all conditions, based on Likelihood ratio test)
+
+### function to get GO enriched terms: getGOenrichment
+```{r}
+  ## gene= vector of genes to test for GO enrichment (gene ensembl format), 
+  ## universe=background gene set
+  ## Database=database containing groups of genes to GO annotation term e.g. msigdb GO:BP
+
+getGOenrichment <-function(gene,universe,Database){
+  gene_entrezID <- genes_anno_type[match(gene, genes_anno_type$ensembl_id), ]
+  gene_go <- enricher(gene_entrezID$entrezid, TERM2GENE=Database, universe=universe) #enrichment analysis with hypergeometric test
+  gene_go <- setReadable(gene_go, OrgDb = org.Hs.eg.db, keyType="ENTREZID") #convert enrichment results from ENTREZ ID format to SYMBOL for easier interpretation
+return(gene_go)
+} 
+```
+
+## GO enrichment analysis with msigdb GO:BP database:
+```{r}
+genes_in_sig <- list()
+GO_enrichment <- list()
+dotplots <- list()
+sig_dfs <- list(WTvslowup, WTvslowdown)
+names_genes <- list("upregulated","downregulated")
+for(i in 1:2){
+# genes_in_clusters_2[[i]] <- names(tot_cluster_2[tot_cluster_2==i]) # get gene names for each cluster & save in list
+# names(genes_in_clusters_2)[i] <- paste("Cluster",i)
+ genes_in_sig[[i]] <- rownames(sig_dfs[[i]])  
+ names(genes_in_sig)[i] <- names_genes[i]
+ GO_enrichment[[i]] <- getGOenrichment(genes_in_sig[[i]], as.character(universe$entrezid),msigdbr_t2g_GO_BP) # do GO enrichment analysis with background gene set set as all gene expressed, database used is msigdb GO:BP
+ dotplots[[i]] <- dotplot(GO_enrichment[[i]], showCategory=10, font.size=12, title=paste(names_genes[i], "genes enriched GO terms")) # make dotplot of top 50 most significantly enriched GO terms 
+}
+grid.arrange(grobs=dotplots) # plot dotplots of enriched GO terms of each cluster all at once 
+```
+
+
+## GO enrichment analysis of genes in differential loops and compartment bins:
+```{r}
+gencode.v43.annotation.gff3 <- import(con='linker-histone/Micro-C/annotations/gencode.v43.annotation.gff3') # import annotation file with ENST to ENSG conversion
+
+dirwfiles <- 'linker-histone/RNA-seq/human/DESeq2_results/loops-compartments/'
+regions <- c('allTSS-50000_AtAwA', 'allTSS-50000_AtAwB', 'allTSS-50000_BtBwA', 'allTSS-50000_BtBwB', 'allTSS-5kb-differential_loops1', 'allTSS-5kb-differential_loops2')
+GO_enrichment_regions <- list()
+dotplots2 <- list()
+for (i in 1:length(regions)){
+  region_transcripts <- read.table(paste0(dirwfiles, regions[i], '-name.txt'), stringsAsFactors = FALSE)
+  print(regions[i])
+  region_genes <- list()
+  for (j in 1:length(region_transcripts[[1]])){
+    gene_match <- gencode.v43.annotation.gff3[na.omit(gencode.v43.annotation.gff3$transcript_id == region_transcripts[[1]][j])]$gene_id # convert ENST to ENSG for GO. this is extremely slow and there is probably a better way
+    gene_match <- gene_match[!duplicated(gene_match)] # get rid of duplicates
+    gene_match <- gsub('\\.[0-9]*$', '', gene_match) # get rid of version 
+    region_genes <- append(region_genes, gene_match) 
+  }
+  region_genes <- unlist(region_genes[!duplicated(region_genes)]) # simplify list and remove duplicates
+  print(length(region_genes))
+  GO_enrichment_regions[[i]] <- getGOenrichment(region_genes, as.character(universe$entrezid), msigdbr_t2g_GO_BP) # do GO enrichment analysis with background gene set set as all gene expressed, database used is msigdb GO:BP
+  dotplots2[[i]] <- dotplot(GO_enrichment_regions[[i]], showCategory=10, font.size=12, title=paste(regions[i], "genes enriched GO terms"))
+}
+grid.arrange(grobs=dotplots2)
+```

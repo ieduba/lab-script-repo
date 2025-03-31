@@ -7,9 +7,9 @@ echo Test permission
 
 source activate data
 
-for SRR in {11973661..11973668}; do
-	prefetch  SRR$SRR
-	fasterq-dump SRR$SRR -t /tmp -e 16 -p
-	gzip SRR$SRR/SRR$SRR*.fastq
+for SRR in {10560118..10560129}; do
+#	prefetch  SRR$SRR
+#	fasterq-dump SRR$SRR -t /tmp -e 16 -p
+	gzip SRR$SRR*.fastq
 done
 
